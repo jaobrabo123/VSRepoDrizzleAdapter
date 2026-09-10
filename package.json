@@ -1,0 +1,74 @@
+{
+  "name": "@vsrepo/drizzle-adapter",
+  "version": "1.0.0",
+  "author": {
+    "email": "joaodev.azevedo@outlook.com",
+    "url": "https://github.com/jaobrabo123",
+    "name": "João Pedro Azevedo Freire Mecenas"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaobrabo123/VSRepoDrizzleAdapter.git"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "oxlint": "^1.82.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "prettier": "^3.9.6",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "6.0.3",
+    "vitest": "4.1.2"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "bugs": {
+    "url": "https://github.com/jaobrabo123/VSRepoDrizzleAdapter/issues"
+  },
+  "description": "VSRepository adapter implementation backed by Drizzle",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.pt-BR.md"
+  ],
+  "homepage": "https://github.com/jaobrabo123/VSRepoDrizzleAdapter#readme",
+  "keywords": [
+    "drizzle",
+    "repository",
+    "orm",
+    "typescript",
+    "repository-pattern",
+    "vsrepo",
+    "vsrepository",
+    "adapter"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "lint": "oxlint --type-aware src/ test/"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "drizzle-orm": "^1.0.0-rc.4"
+  }
+}
