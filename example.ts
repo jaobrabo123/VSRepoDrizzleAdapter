@@ -13,7 +13,18 @@ type User = InferSelectModel<typeof userTable> & { orders: Order[] };
 class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof db>> {
     constructor() {
         super({
-            adapter: new DrizzleAdapter(db, { table: userTable, queryKey: "userTable" }),
+            adapter: new DrizzleAdapter(db, {
+                table: userTable,
+                queryKey: "userTable",
+                relations: {
+                    orders: {
+                        mode: "otm",
+                        restriction: "add",
+                        table: orderTable,
+                        fkThere: "userId",
+                    },
+                },
+            }),
             pkName: "id",
         });
     }
@@ -38,5 +49,7 @@ console.log(allUsers);
 
 const userByEmail = await userRepository.findOneByEmail("joao@email.com");
 console.log(userByEmail);
+
+console.log(await db.selectDistinct({ id: userTable.id }).from(userTable));
 
 await userRepository.query('DELETE FROM "User" WHERE "email" = $1', { args: ["joao@email.com"] });

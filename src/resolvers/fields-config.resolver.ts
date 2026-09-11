@@ -1,7 +1,6 @@
 import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { Column, getTableName, Table } from "drizzle-orm";
 import { SupportedDialects } from "../types/supported-dialects.type.js";
-import { DrizzleField } from "../types/drizzle-field.type.js";
 import { getTableConfig as getTableConfigSqlite } from "drizzle-orm/sqlite-core";
 import { getTableConfig as getTableConfigPg, PgTable } from "drizzle-orm/pg-core";
 import { getTableConfig as getTableConfigCockroach } from "drizzle-orm/cockroach-core";
@@ -17,12 +16,12 @@ type TableConfig = {
 export function resolveFieldsConfig(
     table: Table,
     dialect: SupportedDialects,
-): { pk: DrizzleField; uniqueFields: DrizzleField[]; allFields: Record<string, DrizzleField> } {
-    let pk: DrizzleField | undefined;
+): { pk: string; uniqueFields: string[]; allFields: string[] } {
+    let pk: string | undefined;
     let tableConfig: TableConfig;
-    const allFields: Record<string, DrizzleField> = {};
+    const allFields: string[] = [];
 
-    const uniqueFieldsMap = new Map<string, DrizzleField>();
+    const uniqueFieldsSet = new Set<string>();
 
     switch (dialect) {
         case "postgresql":
@@ -48,32 +47,22 @@ export function resolveFieldsConfig(
     for (const constraint of tableConfig.uniqueConstraints) {
         for (const column of constraint.columns) {
             const colmunName = column.name;
-            const col = (table as any)[colmunName] as Column;
-            const field = {
-                col,
-                name: colmunName,
-            };
 
-            uniqueFieldsMap.set(colmunName, field);
+            uniqueFieldsSet.add(colmunName);
         }
     }
 
     for (const column of tableConfig.columns) {
         const colmunName = column.name;
-        const col = (table as any)[colmunName] as Column;
-        const field = {
-            col,
-            name: colmunName,
-        };
 
         if (column.primary) {
-            pk = field;
-            uniqueFieldsMap.set(colmunName, field);
+            pk = colmunName;
+            uniqueFieldsSet.add(colmunName);
         } else if (column.isUnique) {
-            uniqueFieldsMap.set(colmunName, field);
+            uniqueFieldsSet.add(colmunName);
         }
 
-        allFields[colmunName] = field;
+        allFields.push(colmunName);
     }
 
     if (!pk) {
@@ -84,5 +73,5 @@ export function resolveFieldsConfig(
         );
     }
 
-    return { pk, uniqueFields: [...uniqueFieldsMap.values()], allFields };
+    return { pk, uniqueFields: [...uniqueFieldsSet], allFields };
 }

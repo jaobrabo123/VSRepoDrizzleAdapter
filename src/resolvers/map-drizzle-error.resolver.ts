@@ -98,10 +98,7 @@ const MSSQL_NUMBER_MAP: Record<number, AdapterErrorCode> = {
     18456: AdapterErrorCode.INVALID_CREDENTIALS,
 };
 
-function resolveCodeFromDriverError(
-    dialect: SupportedDialects,
-    error: DriverLikeError,
-): AdapterErrorCode | undefined {
+function resolveCodeFromDriverError(dialect: SupportedDialects, error: DriverLikeError): AdapterErrorCode | undefined {
     switch (dialect) {
         case "postgresql":
         case "cockroach":
@@ -144,7 +141,9 @@ export function mapDrizzleError(error: unknown, operation: string, dialect: Supp
     // DrizzleQueryError wraps the native driver error in `cause` — unwrap it so
     // the dialect-specific code tables above can read the real driver fields.
     const driverError: DriverLikeError =
-        error instanceof DrizzleQueryError && error.cause ? (error.cause as DriverLikeError) : (error as DriverLikeError);
+        error instanceof DrizzleQueryError && error.cause
+            ? (error.cause as DriverLikeError)
+            : (error as DriverLikeError);
 
     const code = resolveCodeFromDriverError(dialect, driverError);
 

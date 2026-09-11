@@ -13,7 +13,6 @@ import {
 } from "vsrepo";
 import { DrizzleAdapterConfig } from "./types/drizzle-adapter-config.type.js";
 import { DrizzleDbLike } from "./types/drizzle-db-like.type.js";
-import { DrizzleField } from "./types/drizzle-field.type.js";
 import { SupportedDialects } from "./types/supported-dialects.type.js";
 import { resolveFieldsConfig } from "./resolvers/fields-config.resolver.js";
 import { DrizzleTransactionLike } from "./types/drizzle-transaction-like.type.js";
@@ -27,6 +26,7 @@ import { parseWith } from "./parsers/with.parser.js";
 import { parseDrizzleWhere } from "./parsers/where.parser.js";
 import { parseOrderBy } from "./parsers/order-by.parser.js";
 import { PlainObject } from "./types/plain-object.type.js";
+import { AdapterRelations } from "./types/adapter-relations.type.js";
 
 /**
  * @publicApi
@@ -35,12 +35,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly table: Table;
     private readonly db: DrizzleDbLike;
     private readonly dialect: SupportedDialects;
-    private readonly pk: DrizzleField;
-    private readonly uniqueFields: DrizzleField[];
-    private readonly allFieldsRecord: Record<string, DrizzleField>;
+    private readonly pk: string;
+    private readonly uniqueFields: string[];
+    private readonly allFieldsRecord: string[];
     private readonly queryKey: keyof K["query"];
+    private readonly relations?: AdapterRelations<T>;
 
-    constructor(db: K, config: DrizzleAdapterConfig<K>) {
+    constructor(db: K, config: DrizzleAdapterConfig<T, K>) {
         super();
 
         const validated = validateDrizzleAdapterConfig<K>(db, config);
@@ -98,6 +99,18 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             limit: options.pagination?.limit,
             offset: options.pagination?.offset,
         };
+    }
+
+    private isRootClient(db: any): boolean {
+        return typeof db?.rollback !== "function";
+    }
+
+    private async runTransactional<R>(db: any, fn: (tx: DrizzleTransactionLike) => Promise<R>): Promise<R> {
+        if (db && !this.isRootClient(db)) {
+            return fn(db);
+        }
+
+        return ((db as DrizzleDbLike) ?? this.db).transaction(fn);
     }
 
     async runInTransaction<R>(
@@ -188,6 +201,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             throw mapDrizzleError(error, "findMany", this.dialect);
         }
     }
+
     save(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         throw new Error("Method not implemented.");
     }
