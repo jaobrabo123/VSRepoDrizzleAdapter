@@ -20,23 +20,26 @@ import { DrizzleTransactionLike } from "./types/drizzle-transaction-like.type.js
 import { resolveIsolationLevel } from "./resolvers/isolation-level.resolver.js";
 import { resolveRawSql } from "./resolvers/raw-sql.resolver.js";
 import { resolveRawResult } from "./resolvers/raw-result.resolver.js";
+import { mapDrizzleError } from "./resolvers/map-drizzle-error.resolver.js";
 
 /**
  * @publicApi
  */
-export class DrizzleAdapter<T> extends VSRepoAdapter<T> {
+export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends VSRepoAdapter<T> {
     private readonly table: Table;
     private readonly db: DrizzleDbLike;
     private readonly dialect: SupportedDialects;
     private readonly pk: DrizzleField;
     private readonly uniqueFields: DrizzleField[];
     private readonly allFieldsRecord: Record<string, DrizzleField>;
+    private readonly queryKey: keyof K["query"];
 
-    constructor(config: DrizzleAdapterConfig) {
+    constructor(db: K, config: DrizzleAdapterConfig<K>) {
         super();
+        this.db = db;
         this.table = config.table;
-        this.db = config.db;
         this.dialect = config.dialect ?? "postgresql";
+        this.queryKey = config.queryKey;
 
         const fieldsConfig = resolveFieldsConfig(this.table, this.dialect);
         this.pk = fieldsConfig.pk;
@@ -56,22 +59,30 @@ export class DrizzleAdapter<T> extends VSRepoAdapter<T> {
             );
         }
 
-        return await this.db.transaction(fn, {
-            isolationLevel: options?.isolationLevel && resolveIsolationLevel(options.isolationLevel),
-        });
+        try {
+            return await this.db.transaction(fn, {
+                isolationLevel: options?.isolationLevel && resolveIsolationLevel(options.isolationLevel),
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, "runInTransaction", this.dialect);
+        }
     }
 
     getDbClient(): DrizzleDbLike {
         return this.db;
     }
 
-    async query<T = any>(rawQuery: string, options?: AdapterQueryOptions): Promise<T> {
+    async query<R = any>(rawQuery: string, options?: AdapterQueryOptions): Promise<R> {
         const executor = (options?.db as DrizzleTransactionLike | undefined) ?? this.db;
-        const sqlQuery = resolveRawSql(this.dialect, rawQuery, options?.args);
 
-        const result = await executor.execute(sqlQuery);
+        try {
+            const sqlQuery = resolveRawSql(this.dialect, rawQuery, options?.args);
+            const result = await executor.execute(sqlQuery);
 
-        return resolveRawResult(this.dialect, result, options?.modifying ?? false) as T;
+            return resolveRawResult(this.dialect, result, options?.modifying ?? false) as R;
+        } catch (error) {
+            throw mapDrizzleError(error, "query", this.dialect);
+        }
     }
 
     findOne(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T | null> {

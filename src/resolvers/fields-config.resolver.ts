@@ -1,4 +1,5 @@
-import { Column, Table } from "drizzle-orm";
+import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
+import { Column, getTableName, Table } from "drizzle-orm";
 import { SupportedDialects } from "../types/supported-dialects.type.js";
 import { DrizzleField } from "../types/drizzle-field.type.js";
 import { getTableConfig as getTableConfigSqlite } from "drizzle-orm/sqlite-core";
@@ -76,8 +77,11 @@ export function resolveFieldsConfig(
     }
 
     if (!pk) {
-        // TODO Definir um erro melhor
-        throw new Error();
+        throw new VSRepoAdapterError(
+            `Table '${getTableName(table)}' has no primary key defined. VSRepoDrizzleAdapter requires every table to declare a primary key.`,
+            AdapterErrorCode.INVALID_ADAPTER_CONFIG,
+            null,
+        );
     }
 
     return { pk, uniqueFields: [...uniqueFieldsMap.values()], allFields };

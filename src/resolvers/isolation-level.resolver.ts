@@ -1,5 +1,6 @@
 import { TransactionIsolationLevel } from "vsrepo";
-import { DrizzleIsolationLevel } from "../types/drizzle-isolation-level.type.js";
+
+export type DrizzleIsolationLevel = "read uncommitted" | "read committed" | "repeatable read" | "serializable";
 
 const isolationRecord: Record<TransactionIsolationLevel, DrizzleIsolationLevel> = {
     ReadCommitted: "read committed",

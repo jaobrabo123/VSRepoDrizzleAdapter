@@ -5,8 +5,8 @@ import { SupportedDialects } from "./supported-dialects.type.js";
 /**
  * @publicApi
  */
-export type DrizzleAdapterConfig = {
+export type DrizzleAdapterConfig<T extends DrizzleDbLike = DrizzleDbLike> = {
     table: Table;
-    db: DrizzleDbLike;
     dialect?: SupportedDialects;
+    queryKey: keyof T["query"];
 };
