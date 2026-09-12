@@ -5,17 +5,24 @@ import { KeysOfType, Primitive } from "vsrepo";
  * @publicApi
  */
 export type AdapterRelation<T, K> = {
-    mode: "otm" | "mto" | "oto";
     restriction: "set" | "add";
     table: Table;
-    nullable?: boolean;
     fkHere?: KeysOfType<T, Primitive>;
     fkThere?: KeysOfType<K, Primitive>;
 } & (
     | {
-          fkHere: KeysOfType<T, Primitive>;
+          mode: "otm";
+          fkThere: KeysOfType<K, Primitive>;
+          fkHere?: never;
       }
     | {
-          fkThere: KeysOfType<K, Primitive>;
+          mode: "mto";
+          nullable?: boolean;
+          fkHere: KeysOfType<T, Primitive>;
       }
+    | ({
+          mode: "oto";
+      } & (
+          { fkHere: KeysOfType<T, Primitive>; fkThere?: never } | { fkThere: KeysOfType<K, Primitive>; fkHere?: never }
+      ))
 );
