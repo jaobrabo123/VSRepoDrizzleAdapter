@@ -33,10 +33,10 @@ const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set([
  *    catches a typo'd/mismatched `queryKey` in the constructor, not three
  *    calls later inside `findOne` (code `MODEL_NOT_FOUND`).
  */
-export function validateDrizzleAdapterConfig<K extends DrizzleDbLike>(
+export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
     db: unknown,
     config: unknown,
-): { db: K; config: DrizzleAdapterConfig<K> } {
+): { db: K; config: DrizzleAdapterConfig<T, K> } {
     if (db === null || db === undefined) {
         throw new VSRepoAdapterError(
             "Missing Drizzle client: the first constructor argument (db) is null/undefined.",
@@ -64,7 +64,7 @@ export function validateDrizzleAdapterConfig<K extends DrizzleDbLike>(
         );
     }
 
-    const { table, dialect, queryKey } = config as DrizzleAdapterConfig<K>;
+    const { table, dialect, queryKey } = config as DrizzleAdapterConfig<T, K>;
 
     if (!is(table, Table)) {
         throw new VSRepoAdapterError(
@@ -110,5 +110,5 @@ export function validateDrizzleAdapterConfig<K extends DrizzleDbLike>(
         );
     }
 
-    return { db: db as K, config: config as DrizzleAdapterConfig<K> };
+    return { db: db as K, config: config as DrizzleAdapterConfig<T, K> };
 }

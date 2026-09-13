@@ -1,11 +1,11 @@
-import { InferSelectModel, is, Table } from "drizzle-orm";
+import { InferSelectModel } from "drizzle-orm";
 import { orderTable, userTable } from "./dev/drizzle/schema.js";
-import { DynamicMethod, QueryMethod, TransactionIsolationLevel, VSRepository } from "vsrepo";
+import { DynamicMethod, QueryMethod, VSRepository } from "vsrepo";
 import { db } from "./dev/drizzle/db.js";
-import { PgAsyncTransaction } from "drizzle-orm/pg-core";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
 import { Role } from "./dev/enum/role.enum.js";
+import { OrderStatus } from "./dev/enum/order-status.enum.js";
 
 type Order = InferSelectModel<typeof orderTable>;
 type User = InferSelectModel<typeof userTable> & { orders: Order[] };
@@ -19,9 +19,9 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
                 relations: {
                     orders: {
                         mode: "otm",
-                        restriction: "add",
-                        table: orderTable,
                         fkThere: "userId",
+                        restriction: "set",
+                        table: orderTable,
                     },
                 },
             }),
@@ -37,19 +37,33 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
         spreadArgs: true,
     })
     declare insertUser: (name: string, role: Role, email: string, passwordHash: string) => Promise<number>;
+
+    @DynamicMethod()
+    declare deleteByEmail: (email: string) => Promise<User>;
 }
 
 const userRepository = new UserRepository();
 
-const affectedRows = await userRepository.insertUser("Joao", Role.ADMIN, "joao@email.com", "125sdt3f");
-console.log("affectedRows", affectedRows);
+const newUser = await userRepository.save(
+    {
+        name: "Pedro",
+        email: "pedro@email.com",
+        role: Role.USER,
+        passwordHash: "2615376123",
+        orders: [
+            {
+                status: OrderStatus.PENDING,
+                total: 3,
+            },
+        ],
+    },
+    { relations: { orders: true } },
+);
+console.log(newUser);
 
-const allUsers = await userRepository.getAll({ relations: { orders: true } });
-console.log(allUsers);
+newUser.orders = [];
 
-const userByEmail = await userRepository.findOneByEmail("joao@email.com");
-console.log(userByEmail);
+const userUpdated = await userRepository.save(newUser, { relations: { orders: true } });
+console.log(userUpdated);
 
-console.log(await db.selectDistinct({ id: userTable.id }).from(userTable));
-
-await userRepository.query('DELETE FROM "User" WHERE "email" = $1', { args: ["joao@email.com"] });
+await userRepository.deleteByEmail(newUser.email);

@@ -1,4 +1,4 @@
-import { Table } from "drizzle-orm";
+import { avg, count as countFn, eq, max as maxFn, min as minFn, sql, sum as sumFn, Table } from "drizzle-orm";
 import {
     AdapterErrorCode,
     AdapterMethodOptions,
@@ -21,12 +21,17 @@ import { resolveRawSql } from "./resolvers/raw-sql.resolver.js";
 import { resolveRawResult } from "./resolvers/raw-result.resolver.js";
 import { mapDrizzleError } from "./resolvers/map-drizzle-error.resolver.js";
 import { validateDrizzleAdapterConfig } from "./validators/validate-adapter-config.validator.js";
+import { validateRelations } from "./validators/validate-relations.validator.js";
 import { parseColumns } from "./parsers/columns.parser.js";
 import { parseWith } from "./parsers/with.parser.js";
-import { parseDrizzleWhere } from "./parsers/where.parser.js";
+import { parseDrizzleWhere, hasQuantifierFilter } from "./parsers/where.parser.js";
+import { parseSqlWhere, SqlWhereContext } from "./parsers/sql-where.parser.js";
 import { parseOrderBy } from "./parsers/order-by.parser.js";
+import { parseSqlOrderBy } from "./parsers/sql-order-by.parser.js";
 import { PlainObject } from "./types/plain-object.type.js";
-import { AdapterRelations } from "./types/adapter-relations.type.js";
+import { ResolvedRelation } from "./types/resolved-relation.type.js";
+import { mergeEntities } from "./resolvers/merge-entities.resolver.js";
+import { resolveFkHereFields, resolveFkThereFields, splitWritePayload } from "./resolvers/relation-writes.resolver.js";
 
 /**
  * @publicApi
@@ -39,12 +44,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly uniqueFields: string[];
     private readonly allFieldsRecord: string[];
     private readonly queryKey: keyof K["query"];
-    private readonly relations?: AdapterRelations<T>;
+    private readonly relations?: Map<string, ResolvedRelation>;
 
     constructor(db: K, config: DrizzleAdapterConfig<T, K>) {
         super();
 
-        const validated = validateDrizzleAdapterConfig<K>(db, config);
+        const validated = validateDrizzleAdapterConfig<T, K>(db, config);
 
         this.db = validated.db;
         this.table = validated.config.table;
@@ -55,6 +60,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         this.pk = fieldsConfig.pk;
         this.uniqueFields = fieldsConfig.uniqueFields;
         this.allFieldsRecord = fieldsConfig.allFields;
+
+        this.relations = validateRelations<T>(this.table, this.dialect, validated.config.relations);
     }
 
     /**
@@ -77,7 +84,11 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * Per the adapter contract: when both `select` and `relations` are
      * given, `select` wins and `relations` is ignored entirely.
      */
-    private resolveReadArgs(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): PlainObject {
+    private async resolveReadArgs(
+        where: VSRepoWhere<T>,
+        options?: AdapterMethodOptions<T>,
+        single = false,
+    ): Promise<PlainObject> {
         options ??= {};
 
         let columns: PlainObject | undefined;
@@ -91,14 +102,117 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             withArg = parseWith(options.relations);
         }
 
+        const found = await this.resolveFindWhere(where, {
+            db: options.db,
+            order: options.order,
+            limit: single ? 1 : options.pagination?.limit,
+            offset: single ? undefined : options.pagination?.offset,
+        });
+
         return {
-            where: parseDrizzleWhere<T>(where),
+            where: found.where,
             columns,
             with: withArg,
-            orderBy: parseOrderBy<T>(options.order),
-            limit: options.pagination?.limit,
-            offset: options.pagination?.offset,
+            // When the prefetch already applied limit/offset, `IN (pks)` no longer preserves that
+            // order on its own, so the same ordering has to be re-applied at this level too — but
+            // limit/offset themselves must NOT be re-applied, since the pk set is already the exact page.
+            orderBy: found.paginationApplied ? found.orderBy : parseOrderBy<T>(options.order),
+            limit: found.paginationApplied ? undefined : options.pagination?.limit,
+            offset: found.paginationApplied ? undefined : options.pagination?.offset,
         };
+    }
+
+    /** Builds the context `parseSqlWhere` needs to resolve `_with`/`_without`/`_some`/`_every`/`_none` relation filters. */
+    private getSqlWhereContext(db?: unknown): SqlWhereContext {
+        return {
+            table: this.table,
+            pk: this.pk,
+            relations: this.relations,
+            db: (db as DrizzleDbLike | undefined) ?? this.db,
+        };
+    }
+
+    /**
+     * Resolves a user-supplied `VSRepoWhere<T>` into the `where` shape the
+     * relational query API (`db.query[queryKey].findFirst/findMany`) accepts.
+     *
+     * The relational API's own object-shaped `where` (`where.parser.ts`) has
+     * no native `_every`/`_none` semantics for to-many relations — so when
+     * `where` contains one (`hasQuantifierFilter`), this instead:
+     *  1. Resolves `where` into a `SQL` condition via `sql-where.parser.ts`
+     *     (which DOES support `_every`/`_none`, via `NOT EXISTS`);
+     *  2. Runs `db.select({pk}).from(table).where(condition)`, applying the
+     *     SAME `order`/`limit`/`offset` the final query would've used
+     *     (`sql-order-by.parser.ts`), so the prefetch only ever pulls the
+     *     rows the caller actually needs, instead of every matching row;
+     *  3. Returns `parseDrizzleWhere({ [pk]: { in: pks } })` instead — the
+     *     relational API then only has to filter by pk (trivial for it),
+     *     while still handling `columns`/`with` on the correct result set.
+     *
+     * Since SQL `IN (...)` doesn't preserve the given list's order, `resolveReadArgs`
+     * re-applies `orderBy` (but NOT `limit`/`offset`, already baked into the pk set)
+     * on the final relational query when `paginationApplied` comes back `true`.
+     *
+     * This keeps `_every`/`_none` support consistent between this adapter's
+     * two `where` parsers — from the outside, `findOne`/`findMany`/etc. never
+     * throw `NOT_SUPPORTED` for them, at the cost of an extra round-trip only
+     * when they're actually used.
+     */
+    private async resolveFindWhere(
+        where: VSRepoWhere<T>,
+        opts?: { db?: unknown; order?: AdapterMethodOptions<T>["order"]; limit?: number; offset?: number },
+    ): Promise<{ where: PlainObject | undefined; orderBy?: PlainObject; paginationApplied: boolean }> {
+        if (!hasQuantifierFilter(where)) {
+            return { where: parseDrizzleWhere<T>(where), paginationApplied: false };
+        }
+
+        const executor = (opts?.db as DrizzleDbLike | undefined) ?? this.db;
+        const pkColumn = (this.table as unknown as PlainObject)[this.pk];
+        const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+        const sqlOrderBy = parseSqlOrderBy<T>(this.table, opts?.order);
+
+        let qb = (executor as any).select({ pk: pkColumn }).from(this.table).where(condition);
+        if (sqlOrderBy) qb = qb.orderBy(...sqlOrderBy);
+        if (opts?.limit !== undefined) qb = qb.limit(opts.limit);
+        if (opts?.offset !== undefined) qb = qb.offset(opts.offset);
+
+        const rows = await qb;
+        const pks = rows.map((row: PlainObject) => row.pk);
+
+        return {
+            where: parseDrizzleWhere<T>({ [this.pk]: { in: pks } } as unknown as VSRepoWhere<T>),
+            orderBy: parseOrderBy<T>(opts?.order),
+            paginationApplied: opts?.limit !== undefined || opts?.offset !== undefined,
+        };
+    }
+
+    /**
+     * Strips relation fields from a payload — used by `createMany`/`updateMany`/
+     * `updateManyReturning`, since batch statements only accept flat column
+     * data (no nested writes). Throws `VSRepoAdapterError` (code
+     * `NOT_SUPPORTED`) instead of silently dropping the field, when a
+     * configured relation field is present in the payload.
+     */
+    private stripRelationFields(obj: PlainObject): PlainObject {
+        if (!this.relations) return obj;
+
+        const data: PlainObject = {};
+
+        for (const [key, value] of Object.entries(obj)) {
+            if (value === undefined) continue;
+
+            if (this.relations.has(key)) {
+                throw new VSRepoAdapterError(
+                    `Field '${key}' is a configured relation, but this adapter's *Many operations don't support nested relation writes.`,
+                    AdapterErrorCode.NOT_SUPPORTED,
+                    null,
+                );
+            }
+
+            data[key] = value;
+        }
+
+        return data;
     }
 
     private isRootClient(db: any): boolean {
@@ -153,7 +267,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
     async findOne(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T | null> {
         try {
-            const arg = this.resolveReadArgs(where, options);
+            const arg = await this.resolveReadArgs(where, options, true);
             const result = await this.getQueryBuilder(options?.db).findFirst(arg);
 
             return (result ?? null) as T | null;
@@ -164,7 +278,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
     async findOneOrThrow(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
-            const arg = this.resolveReadArgs(where, options);
+            const arg = await this.resolveReadArgs(where, options, true);
             const result = await this.getQueryBuilder(options?.db).findFirst(arg);
 
             if (!result) {
@@ -195,111 +309,443 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
 
         try {
-            const arg = this.resolveReadArgs(where, options);
+            const arg = await this.resolveReadArgs(where, options);
             return (await this.getQueryBuilder(options?.db).findMany(arg)) as T[];
         } catch (error) {
             throw mapDrizzleError(error, "findMany", this.dialect);
         }
     }
 
-    save(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
-        throw new Error("Method not implemented.");
+    async save(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        try {
+            const objAny = obj as unknown as PlainObject;
+            const pkValue = objAny[this.pk];
+
+            if (pkValue === undefined) {
+                return await this.create(obj, options);
+            }
+
+            return await this.runTransactional(options?.db, async tx => {
+                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
+                const existing = await (tx as any)
+                    .select({ pk: pkColumn })
+                    .from(this.table)
+                    .where(eq(pkColumn, pkValue))
+                    .limit(1);
+
+                if (existing.length === 0) {
+                    return this.create(obj, { ...options, db: tx });
+                }
+
+                return this.update({ [this.pk]: pkValue } as unknown as VSRepoWhere<T>, obj, { ...options, db: tx });
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, "save", this.dialect);
+        }
     }
-    saveMany(objs: DeepPartial<T>[], options?: AdapterMethodOptions<T>): Promise<T[]> {
-        throw new Error("Method not implemented.");
+
+    async saveMany(objs: DeepPartial<T>[], options?: AdapterMethodOptions<T>): Promise<T[]> {
+        try {
+            return await this.runTransactional(options?.db, tx =>
+                Promise.all(objs.map(obj => this.save(obj, { ...options, db: tx }))),
+            );
+        } catch (error) {
+            throw mapDrizzleError(error, "saveMany", this.dialect);
+        }
     }
-    create(objs: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
-        throw new Error("Method not implemented.");
+
+    async create(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        try {
+            return await this.runTransactional(options?.db, async tx => {
+                const objAny = obj as unknown as PlainObject;
+
+                const { scalarFields, fkHereEntries, fkThereEntries } = splitWritePayload(
+                    objAny,
+                    this.relations,
+                    this.pk,
+                    false,
+                );
+
+                await resolveFkHereFields(tx, fkHereEntries, scalarFields, undefined);
+
+                const [created] = await (tx as any).insert(this.table).values(scalarFields).returning();
+                const ownPkValue = created[this.pk];
+
+                await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
+
+                const readArg = await this.resolveReadArgs(
+                    { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
+                    options,
+                );
+                const result = await this.getQueryBuilder(tx).findFirst(readArg);
+
+                return (result ?? created) as T;
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, "create", this.dialect);
+        }
     }
-    createMany(
+
+    async createMany(
         objs: DeepPartial<T>[],
         options?: AdapterMethodOptions<T> & { ignoreConflicts?: boolean },
     ): Promise<CountResult> {
-        throw new Error("Method not implemented.");
+        try {
+            const data = objs.map(obj => this.stripRelationFields(obj as unknown as PlainObject));
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+
+            let qb = (executor as any).insert(this.table).values(data);
+            if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
+
+            const result = await qb;
+            const affected = resolveRawResult(this.dialect, result, true) as number;
+
+            return { count: affected ?? data.length };
+        } catch (error) {
+            throw mapDrizzleError(error, "createMany", this.dialect);
+        }
     }
-    createManyReturning(
+
+    async createManyReturning(
         objs: DeepPartial<T>[],
         options?: AdapterMethodOptions<T> & { ignoreConflicts?: boolean },
     ): Promise<T[]> {
-        throw new Error("Method not implemented.");
+        try {
+            const data = objs.map(obj => this.stripRelationFields(obj as unknown as PlainObject));
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+
+            let qb = (executor as any).insert(this.table).values(data);
+            if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
+
+            return (await qb.returning()) as T[];
+        } catch (error) {
+            throw mapDrizzleError(error, "createManyReturning", this.dialect);
+        }
     }
-    delete(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
-        throw new Error("Method not implemented.");
+
+    async delete(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        try {
+            return await this.runTransactional(options?.db, async tx => {
+                const readArg = await this.resolveReadArgs(where, options, true);
+                const current = await this.getQueryBuilder(tx).findFirst(readArg);
+
+                if (!current) {
+                    throw new VSRepoAdapterError(
+                        "'delete' found no record matching the given 'where'.",
+                        AdapterErrorCode.NOT_FOUND,
+                        null,
+                    );
+                }
+
+                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
+                await (tx as any).delete(this.table).where(eq(pkColumn, (current as PlainObject)[this.pk]));
+
+                return current as T;
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, "delete", this.dialect);
+        }
     }
-    deleteMany(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<CountResult> {
-        throw new Error("Method not implemented.");
+
+    async deleteMany(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<CountResult> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+
+            const result = await (executor as any).delete(this.table).where(condition);
+            const affected = resolveRawResult(this.dialect, result, true) as number;
+
+            return { count: affected ?? 0 };
+        } catch (error) {
+            throw mapDrizzleError(error, "deleteMany", this.dialect);
+        }
     }
-    deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
-        throw new Error("Method not implemented.");
+
+    async deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+
+            return (await (executor as any).delete(this.table).where(condition).returning()) as T[];
+        } catch (error) {
+            throw mapDrizzleError(error, "deleteManyReturning", this.dialect);
+        }
     }
-    update(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
-        throw new Error("Method not implemented.");
+
+    async update(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        try {
+            return await this.runTransactional(options?.db, async tx => {
+                const current = await this.getQueryBuilder(tx).findFirst({
+                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
+                });
+
+                if (!current) {
+                    throw new VSRepoAdapterError(
+                        "'update' found no record matching the given 'where'.",
+                        AdapterErrorCode.NOT_FOUND,
+                        null,
+                    );
+                }
+
+                const ownPkValue = (current as PlainObject)[this.pk];
+                const objAny = obj as unknown as PlainObject;
+                const { scalarFields, fkHereEntries, fkThereEntries } = splitWritePayload(
+                    objAny,
+                    this.relations,
+                    this.pk,
+                    true,
+                );
+
+                await resolveFkHereFields(tx, fkHereEntries, scalarFields, current as PlainObject);
+
+                if (Object.keys(scalarFields).length > 0) {
+                    const pkColumn = (this.table as unknown as PlainObject)[this.pk];
+                    await (tx as any).update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
+                }
+
+                await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
+
+                const readArg = await this.resolveReadArgs(
+                    { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
+                    options,
+                );
+                const result = await this.getQueryBuilder(tx).findFirst(readArg);
+
+                return (result ?? current) as T;
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, "update", this.dialect);
+        }
     }
-    updateMany(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<CountResult> {
-        throw new Error("Method not implemented.");
+
+    async updateMany(
+        where: VSRepoWhere<T>,
+        obj: DeepPartial<T>,
+        options?: AdapterMethodOptions<T>,
+    ): Promise<CountResult> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const data = this.stripRelationFields(obj as unknown as PlainObject);
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+
+            const result = await (executor as any).update(this.table).set(data).where(condition);
+            const affected = resolveRawResult(this.dialect, result, true) as number;
+
+            return { count: affected ?? 0 };
+        } catch (error) {
+            throw mapDrizzleError(error, "updateMany", this.dialect);
+        }
     }
-    updateManyReturning(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
-        throw new Error("Method not implemented.");
+
+    async updateManyReturning(
+        where: VSRepoWhere<T>,
+        obj: DeepPartial<T>,
+        options?: AdapterMethodOptions<T>,
+    ): Promise<T[]> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const data = this.stripRelationFields(obj as unknown as PlainObject);
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+
+            return (await (executor as any).update(this.table).set(data).where(condition).returning()) as T[];
+        } catch (error) {
+            throw mapDrizzleError(error, "updateManyReturning", this.dialect);
+        }
     }
-    count(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number> {
-        throw new Error("Method not implemented.");
+
+    async count(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+
+            const [row] = await (executor as any).select({ value: countFn() }).from(this.table).where(condition);
+            return Number(row?.value ?? 0);
+        } catch (error) {
+            throw mapDrizzleError(error, "count", this.dialect);
+        }
     }
-    exists(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<boolean> {
-        throw new Error("Method not implemented.");
+
+    async exists(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<boolean> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+
+            const rows = await (executor as any)
+                .select({ one: sql`1` })
+                .from(this.table)
+                .where(condition)
+                .limit(1);
+            return rows.length > 0;
+        } catch (error) {
+            throw mapDrizzleError(error, "exists", this.dialect);
+        }
     }
-    merge<K>(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<K & T> {
-        throw new Error("Method not implemented.");
+
+    async merge<K>(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<K & T> {
+        try {
+            const readArg = await this.resolveReadArgs(where, options);
+            const result = await this.getQueryBuilder(options?.db).findFirst(readArg);
+
+            if (!result) {
+                throw new VSRepoAdapterError(
+                    "'merge' found no record matching the given 'where'.",
+                    AdapterErrorCode.NOT_FOUND,
+                    null,
+                );
+            }
+
+            return mergeEntities(result as PlainObject, obj as unknown as PlainObject, this.relations) as unknown as K &
+                T;
+        } catch (error) {
+            throw mapDrizzleError(error, "merge", this.dialect);
+        }
     }
-    upsert(
+
+    async upsert(
         where: VSRepoWhere<T>,
         create: DeepPartial<T>,
         update: DeepPartial<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
-        throw new Error("Method not implemented.");
+        try {
+            return await this.runTransactional(options?.db, async tx => {
+                const current = await this.getQueryBuilder(tx).findFirst({
+                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
+                });
+
+                if (current) {
+                    const ownPkValue = (current as PlainObject)[this.pk];
+                    return this.update({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, update, {
+                        ...options,
+                        db: tx,
+                    });
+                }
+
+                return this.create(create, { ...options, db: tx });
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, "upsert", this.dialect);
+        }
     }
+
+    /** Shared implementation behind `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne`. */
+    private async atomicUpdate(
+        operation: string,
+        field: NumericKeys<T>,
+        toExpression: (column: any, value: unknown) => unknown,
+        value: unknown,
+        where: VSRepoWhere<T>,
+        options?: AdapterMethodOptions<T>,
+    ): Promise<T> {
+        try {
+            return await this.runTransactional(options?.db, async tx => {
+                const current = await this.getQueryBuilder(tx).findFirst({
+                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
+                });
+
+                if (!current) {
+                    throw new VSRepoAdapterError(
+                        `'${operation}' found no record matching the given 'where'.`,
+                        AdapterErrorCode.NOT_FOUND,
+                        null,
+                    );
+                }
+
+                const ownPkValue = (current as PlainObject)[this.pk];
+                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
+                const column = (this.table as unknown as PlainObject)[field as string];
+
+                await (tx as any)
+                    .update(this.table)
+                    .set({ [field as string]: toExpression(column, value) })
+                    .where(eq(pkColumn, ownPkValue));
+
+                const readArg = await this.resolveReadArgs(
+                    { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
+                    options,
+                );
+                return (await this.getQueryBuilder(tx).findFirst(readArg)) as T;
+            });
+        } catch (error) {
+            throw mapDrizzleError(error, operation, this.dialect);
+        }
+    }
+
     incrementOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
-        throw new Error("Method not implemented.");
+        return this.atomicUpdate("incrementOne", field, (column, v) => sql`${column} + ${v}`, value, where, options);
     }
+
     decrementOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
-        throw new Error("Method not implemented.");
+        return this.atomicUpdate("decrementOne", field, (column, v) => sql`${column} - ${v}`, value, where, options);
     }
+
     multiplyOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
-        throw new Error("Method not implemented.");
+        return this.atomicUpdate("multiplyOne", field, (column, v) => sql`${column} * ${v}`, value, where, options);
     }
+
     divideOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
-        throw new Error("Method not implemented.");
+        return this.atomicUpdate("divideOne", field, (column, v) => sql`${column} / ${v}`, value, where, options);
     }
+
+    /** Shared implementation behind `sum`/`average`/`min`/`max`. */
+    private async aggregate(
+        operation: string,
+        fn: (column: any) => any,
+        field: NumericKeys<T>,
+        where: VSRepoWhere<T> | undefined,
+        options: AdapterMethodOptions<T> | undefined,
+    ): Promise<number | null> {
+        try {
+            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            const column = (this.table as unknown as PlainObject)[field as string];
+
+            const [row] = await (executor as any)
+                .select({ value: fn(column) })
+                .from(this.table)
+                .where(condition);
+            const raw = row?.value;
+
+            if (raw === null || raw === undefined) return null;
+            return typeof raw === "number" ? raw : Number(raw);
+        } catch (error) {
+            throw mapDrizzleError(error, operation, this.dialect);
+        }
+    }
+
     sum(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
-        throw new Error("Method not implemented.");
+        return this.aggregate("sum", sumFn, field, where, options);
     }
+
     average(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
-        throw new Error("Method not implemented.");
+        return this.aggregate("average", avg, field, where, options);
     }
+
     min(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
-        throw new Error("Method not implemented.");
+        return this.aggregate("min", minFn, field, where, options);
     }
+
     max(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
-        throw new Error("Method not implemented.");
+        return this.aggregate("max", maxFn, field, where, options);
     }
 }

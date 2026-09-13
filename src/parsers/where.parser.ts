@@ -16,7 +16,10 @@
  *                                Drizzle's relational filter has no native `every`/`none` semantics for
  *                                to-many relations (only an implicit `some`/exists filter) — `_every`/`_none`
  *                                throw `VSRepoAdapterError` (code `NOT_SUPPORTED`) instead of silently
- *                                producing a wrong query.
+ *                                producing a wrong query. `DrizzleAdapter` never actually hits this throw for
+ *                                `_every`/`_none` on its own: it detects them upfront via `hasQuantifierFilter`
+ *                                (exported below) and falls back to a pk-prefetch through `sql-where.parser.ts`
+ *                                (which does support them) before ever calling this parser with such a `where`.
  *  - To-one relation (object):  { author: { _with: { id: 1 } } }    -> { author: { id: 1 } }
  *                                { author: { _without: { id: 1 } } } -> { author: { NOT: { id: 1 } } }
  *  - Root-level logical ops:    { AND: [...], OR: [...], NOT: {...} }
@@ -222,4 +225,32 @@ function parseWhere(where: PlainObject | undefined | null): PlainObject | undefi
  */
 export function parseDrizzleWhere<T, W = any>(where: VSRepoWhere<T> | undefined | null): W | undefined {
     return parseWhere(where as PlainObject | undefined | null) as W | undefined;
+}
+
+/**
+ * Recursively checks whether `where` contains an `_every`/`_none` key
+ * anywhere (at any nesting level, inside `AND`/`OR`/`NOT`, or inside a
+ * relation body) — used by `DrizzleAdapter` to decide whether a given
+ * `where` needs the pk-prefetch fallback (see `DrizzleAdapter`'s
+ * `resolveFindWhere`) instead of going straight to the relational query API,
+ * which has no native `every`/`none` semantics (see this file's docstring).
+ */
+export function hasQuantifierFilter(where: unknown): boolean {
+    if (where === null || where === undefined) return false;
+
+    if (Array.isArray(where)) {
+        return where.some(hasQuantifierFilter);
+    }
+
+    if (typeof where !== "object" || where instanceof Date) {
+        return false;
+    }
+
+    for (const [key, value] of Object.entries(where as PlainObject)) {
+        if (value === undefined) continue;
+        if (key === "_every" || key === "_none") return true;
+        if (hasQuantifierFilter(value)) return true;
+    }
+
+    return false;
 }
