@@ -1,14 +1,10 @@
-import { getColumns, InferSelectModel } from "drizzle-orm";
-import { orderTable, userTable } from "./dev/drizzle/schema.js";
+import { addressTable, postTable, userTable } from "./dev/drizzle/schema.js";
 import { DynamicMethod, QueryMethod, VSRepository } from "vsrepo";
 import { db } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
 import { Role } from "./dev/enum/role.enum.js";
-import { OrderStatus } from "./dev/enum/order-status.enum.js";
-
-type Order = InferSelectModel<typeof orderTable>;
-type User = InferSelectModel<typeof userTable> & { orders: Order[] };
+import { User } from "./dev/entities.js";
 
 class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof db>> {
     constructor() {
@@ -17,11 +13,17 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
                 table: userTable,
                 queryKey: "userTable",
                 relations: {
-                    orders: {
+                    posts: {
                         mode: "otm",
                         fkThere: "userId",
+                        restriction: "add",
+                        table: postTable,
+                    },
+                    address: {
+                        mode: "oto",
                         restriction: "set",
-                        table: orderTable,
+                        table: addressTable,
+                        fkThere: "userId",
                     },
                 },
             }),
@@ -50,22 +52,18 @@ const newUser = await userRepository.save(
         email: "pedro@email.com",
         role: Role.USER,
         passwordHash: "2615376123",
-        orders: [
-            {
-                status: OrderStatus.PENDING,
-                total: 3,
-            },
-        ],
+        address: {
+            city: "New York",
+            state: "NY",
+        },
     },
-    { relations: { orders: true } },
+    { relations: { address: true } },
 );
 console.log(newUser);
 
-newUser.orders = [];
+newUser.address!.city = "Some City";
 
-const userUpdated = await userRepository.save(newUser, { relations: { orders: true } });
+const userUpdated = await userRepository.save(newUser, { relations: { address: true } });
 console.log(userUpdated);
 
 await userRepository.deleteByEmail(newUser.email);
-
-console.log(getColumns(userTable));

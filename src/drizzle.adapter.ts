@@ -43,6 +43,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly pk: string;
     private readonly queryKey: keyof K["query"];
     private readonly relations?: Map<string, ResolvedRelation>;
+    private readonly relationsKeysSet?: Set<string>;
 
     constructor(db: K, config: DrizzleAdapterConfig<T, K>) {
         super();
@@ -58,6 +59,9 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         this.pk = fieldsConfig.pk;
 
         this.relations = validateRelations<T>(this.table, this.dialect, validated.config.relations);
+        if (this.relations) {
+            this.relationsKeysSet = new Set(Object.keys(this.relations));
+        }
     }
 
     /**
@@ -91,7 +95,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         let withArg: PlainObject | undefined;
 
         if (options.select) {
-            const parsedSelect = parseColumns(options.select);
+            const parsedSelect = parseColumns(options.select, this.relationsKeysSet);
             columns = parsedSelect.columns;
             withArg = parsedSelect.with;
         } else if (options.relations) {
@@ -180,6 +184,22 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             orderBy: parseOrderBy<T>(opts?.order),
             paginationApplied: opts?.limit !== undefined || opts?.offset !== undefined,
         };
+    }
+
+    /**
+     * Fetches the current row matching `where` (or `null` when none exists),
+     * using the same where-resolution path as `update` — the single place
+     * "find the row behind a where" is materialized.
+     *
+     * Internal callers that already fetched a row in their own transaction
+     * (`save`, `upsert`) use this to detect/create, then hand that same row
+     * to `updateCore` as `current`, so the row is only ever read once.
+     */
+    private async findCurrentByWhere(where: VSRepoWhere<T>, opts?: { db?: unknown }): Promise<PlainObject | null> {
+        const arg = {
+            where: (await this.resolveFindWhere(where, { db: opts?.db, limit: 1 })).where,
+        };
+        return (await this.getQueryBuilder(opts?.db).findFirst(arg)) ?? null;
     }
 
     /**
@@ -322,18 +342,22 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             }
 
             return await this.runTransactional(options?.db, async tx => {
-                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
-                const existing = await (tx as any)
-                    .select({ pk: pkColumn })
-                    .from(this.table)
-                    .where(eq(pkColumn, pkValue))
-                    .limit(1);
+                const current = await this.findCurrentByWhere({ [this.pk]: pkValue } as unknown as VSRepoWhere<T>, {
+                    db: tx,
+                });
 
-                if (existing.length === 0) {
+                if (current === null) {
                     return this.create(obj, { ...options, db: tx });
                 }
 
-                return this.update({ [this.pk]: pkValue } as unknown as VSRepoWhere<T>, obj, { ...options, db: tx });
+                // The row was already read in this tx — hand it to the core so the
+                // update path doesn't re-fetch the same row a second time.
+                return this.updateCore(
+                    { [this.pk]: pkValue } as unknown as VSRepoWhere<T>,
+                    obj,
+                    { ...options, db: tx },
+                    current,
+                );
             });
         } catch (error) {
             throw mapDrizzleError(error, "save", this.dialect);
@@ -364,7 +388,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
                 await resolveFkHereFields(tx, fkHereEntries, scalarFields, undefined);
 
-                const [created] = await (tx as any).insert(this.table).values(scalarFields).returning();
+                const [created] = await (tx as any)
+                    .insert(this.table)
+                    .values(scalarFields)
+                    .returning({ [this.pk]: (this.table as any)[this.pk] });
                 const ownPkValue = created[this.pk];
 
                 await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
@@ -375,7 +402,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 );
                 const result = await this.getQueryBuilder(tx).findFirst(readArg);
 
-                return (result ?? created) as T;
+                return result as T;
             });
         } catch (error) {
             throw mapDrizzleError(error, "create", this.dialect);
@@ -396,7 +423,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             const result = await qb;
             const affected = resolveRawResult(this.dialect, result, true) as number;
 
-            return { count: affected ?? data.length };
+            return { count: affected };
         } catch (error) {
             throw mapDrizzleError(error, "createMany", this.dialect);
         }
@@ -470,48 +497,65 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
     async update(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
-            return await this.runTransactional(options?.db, async tx => {
-                const current = await this.getQueryBuilder(tx).findFirst({
-                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
-                });
-
-                if (!current) {
-                    throw new VSRepoAdapterError(
-                        "'update' found no record matching the given 'where'.",
-                        AdapterErrorCode.NOT_FOUND,
-                        null,
-                    );
-                }
-
-                const ownPkValue = (current as PlainObject)[this.pk];
-                const objAny = obj as unknown as PlainObject;
-                const { scalarFields, fkHereEntries, fkThereEntries } = splitWritePayload(
-                    objAny,
-                    this.relations,
-                    this.pk,
-                    true,
-                );
-
-                await resolveFkHereFields(tx, fkHereEntries, scalarFields, current as PlainObject);
-
-                if (Object.keys(scalarFields).length > 0) {
-                    const pkColumn = (this.table as unknown as PlainObject)[this.pk];
-                    await (tx as any).update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
-                }
-
-                await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
-
-                const readArg = await this.resolveReadArgs(
-                    { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
-                    options,
-                );
-                const result = await this.getQueryBuilder(tx).findFirst(readArg);
-
-                return (result ?? current) as T;
-            });
+            return await this.updateCore(where, obj, options);
         } catch (error) {
             throw mapDrizzleError(error, "update", this.dialect);
         }
+    }
+
+    /**
+     * Shared implementation behind `update` — also reached from `save` and
+     * `upsert`, which pass in `current` (the row they already fetched in the
+     * same transaction) so the row is read only once instead of once per
+     * method. The `'update' found no record...` contract applies whenever it
+     * runs without a preloaded row (i.e. when called through the public
+     * `update`), and always as a safety net.
+     *
+     * Invariant: when `current` is provided, it must be the full row read
+     * from the exact `tx` referenced by `options.db` (never from outside a
+     * transaction, and never a pk-only projection — `resolveFkHereFields`
+     * reads the current FK values off it).
+     */
+    private async updateCore(
+        where: VSRepoWhere<T>,
+        obj: DeepPartial<T>,
+        options?: AdapterMethodOptions<T>,
+        current?: PlainObject,
+    ): Promise<T> {
+        return this.runTransactional(options?.db, async tx => {
+            const resolved = current ?? (await this.findCurrentByWhere(where, { db: tx }));
+
+            if (!resolved) {
+                throw new VSRepoAdapterError(
+                    "'update' found no record matching the given 'where'.",
+                    AdapterErrorCode.NOT_FOUND,
+                    null,
+                );
+            }
+
+            const ownPkValue = resolved[this.pk];
+            const objAny = obj as unknown as PlainObject;
+            const { scalarFields, fkHereEntries, fkThereEntries } = splitWritePayload(
+                objAny,
+                this.relations,
+                this.pk,
+                true,
+            );
+
+            await resolveFkHereFields(tx, fkHereEntries, scalarFields, resolved);
+
+            if (Object.keys(scalarFields).length > 0) {
+                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
+                await (tx as any).update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
+            }
+
+            await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
+
+            const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, options);
+            const result = await this.getQueryBuilder(tx).findFirst(readArg);
+
+            return result as T;
+        });
     }
 
     async updateMany(
@@ -605,16 +649,16 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     ): Promise<T> {
         try {
             return await this.runTransactional(options?.db, async tx => {
-                const current = await this.getQueryBuilder(tx).findFirst({
-                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
-                });
+                const current = await this.findCurrentByWhere(where, { db: tx });
 
                 if (current) {
-                    const ownPkValue = (current as PlainObject)[this.pk];
-                    return this.update({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, update, {
-                        ...options,
-                        db: tx,
-                    });
+                    const ownPkValue = current[this.pk];
+                    return this.updateCore(
+                        { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
+                        update,
+                        { ...options, db: tx },
+                        current,
+                    );
                 }
 
                 return this.create(create, { ...options, db: tx });
@@ -637,6 +681,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return await this.runTransactional(options?.db, async tx => {
                 const current = await this.getQueryBuilder(tx).findFirst({
                     where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
+                    // Only the pk is needed: atomic updates touch a single numeric
+                    // column and never resolve relations — a full-row read here
+                    // would ship the whole entity back to the client for nothing.
+                    columns: { [this.pk]: true },
                 });
 
                 if (!current) {

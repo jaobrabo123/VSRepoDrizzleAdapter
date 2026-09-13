@@ -4,36 +4,29 @@ import { defineRelations } from "drizzle-orm";
 import * as schema from "./schema.js";
 
 const relations = defineRelations(schema, r => ({
-    productTable: {
+    addressTable: {
+        user: r.one.userTable({
+            from: r.addressTable.userId,
+            to: r.userTable.id,
+        }),
+    },
+    postTable: {
         category: r.one.categoryTable({
-            from: r.productTable.categoryId,
+            from: r.postTable.categoryId,
             to: r.categoryTable.id,
         }),
-        reviews: r.many.reviewTable(),
-    },
-    reviewTable: {
-        product: r.one.productTable({
-            from: r.reviewTable.productId,
-            to: r.productTable.id,
-        }),
         user: r.one.userTable({
-            from: r.reviewTable.userId,
+            from: r.postTable.userId,
             to: r.userTable.id,
         }),
     },
     categoryTable: {
-        products: r.many.productTable(),
-    },
-    orderTable: {
-        user: r.one.userTable({
-            from: r.orderTable.userId,
-            to: r.userTable.id,
-        }),
+        posts: r.many.postTable(),
     },
     userTable: {
-        orders: r.many.orderTable(),
-        reviews: r.many.reviewTable(),
+        address: r.one.addressTable(),
+        posts: r.many.postTable(),
     },
 }));
 
-export const db = drizzle(process.env.DATABASE_URL!, { relations });
+export const db = drizzle(process.env.DATABASE_URL!, { relations, logger: true });

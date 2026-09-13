@@ -20,20 +20,25 @@ export type ParsedColumns = { columns: PlainObject; with?: PlainObject };
  *    moved into `with` (as `{ columns, with }`, recursively parsed the same
  *    way) instead of `columns`.
  */
-export function parseColumns<T>(select: VSRepoSelect<T>): ParsedColumns {
+export function parseColumns<T>(select: VSRepoSelect<T>, relationsKeysSet?: Set<string>): ParsedColumns {
     const columns: PlainObject = {};
     let withResult: PlainObject | undefined;
 
     for (const [key, value] of Object.entries(select)) {
         if (value === undefined) continue;
 
-        if (isPlainObject(value)) {
+        if (typeof value !== "boolean") {
             withResult ??= {};
-            const nested = parseColumns(value);
+            const nested = parseColumns(value as PlainObject);
             withResult[key] = nested.with
                 ? { columns: nested.columns, with: nested.with }
                 : { columns: nested.columns };
         } else {
+            if (relationsKeysSet?.has(key)) {
+                withResult ??= {};
+                withResult[key] = value;
+                continue;
+            }
             columns[key] = value;
         }
     }

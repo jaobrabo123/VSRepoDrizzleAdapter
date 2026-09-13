@@ -1,17 +1,5 @@
-import {
-    pgEnum,
-    pgTable,
-    uuid,
-    varchar,
-    timestamp,
-    numeric,
-    integer,
-    boolean,
-    uniqueIndex,
-    smallint,
-} from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, varchar, timestamp, char } from "drizzle-orm/pg-core";
 import { Role } from "../enum/role.enum.js";
-import { OrderStatus } from "../enum/order-status.enum.js";
 
 export const timestamps = {
     createdAt: timestamp({ precision: 6, withTimezone: true }).defaultNow().notNull(),
@@ -19,14 +7,24 @@ export const timestamps = {
 };
 
 export const roleEnum = pgEnum("UserRole", Role);
-export const orderStatusEnum = pgEnum("OrderStatus", OrderStatus);
 
 export const userTable = pgTable("User", {
     id: uuid().primaryKey().defaultRandom(),
     name: varchar({ length: 150 }).notNull(),
     email: varchar({ length: 255 }).notNull().unique(),
     passwordHash: varchar({ length: 255 }).notNull(),
-    role: roleEnum().notNull(),
+    role: roleEnum().notNull().default(Role.USER),
+    ...timestamps,
+});
+
+export const addressTable = pgTable("Address", {
+    id: uuid().primaryKey().defaultRandom(),
+    city: varchar({ length: 150 }).notNull(),
+    state: char({ length: 2 }).notNull(),
+    userId: uuid()
+        .notNull()
+        .unique()
+        .references(() => userTable.id, { onDelete: "cascade" }),
     ...timestamps,
 });
 
@@ -36,57 +34,13 @@ export const categoryTable = pgTable("Category", {
     createdAt: timestamps.createdAt,
 });
 
-export const productTable = pgTable("Product", {
+export const postTable = pgTable("Post", {
     id: uuid().primaryKey().defaultRandom(),
-    name: varchar({ length: 150 }).notNull(),
-    description: varchar({ length: 3000 }).notNull(),
-    price: numeric({ precision: 12, scale: 2, mode: "number" }).notNull(),
-    stock: integer().notNull(),
-    active: boolean().notNull(),
-    categoryId: uuid().references(() => categoryTable.id),
-    ...timestamps,
-});
-
-export const orderTable = pgTable("Order", {
-    id: uuid().primaryKey().defaultRandom(),
+    title: varchar({ length: 100 }).notNull(),
+    content: varchar({ length: 1000 }).notNull(),
+    categoryId: uuid().references(() => categoryTable.id, { onDelete: "set null" }),
     userId: uuid()
         .notNull()
-        .references(() => userTable.id),
-    status: orderStatusEnum().notNull(),
-    total: numeric({ precision: 12, scale: 2, mode: "number" }).notNull(),
+        .references(() => userTable.id, { onDelete: "cascade" }),
     ...timestamps,
 });
-
-export const orderItemTable = pgTable(
-    "OrderItem",
-    {
-        id: uuid().primaryKey().defaultRandom(),
-        orderId: uuid()
-            .notNull()
-            .references(() => orderTable.id),
-        productId: uuid()
-            .notNull()
-            .references(() => productTable.id),
-        quantity: integer().notNull(),
-        unityPrice: numeric({ precision: 12, scale: 2, mode: "number" }).notNull(),
-        subtotal: numeric({ precision: 12, scale: 2, mode: "number" }).notNull(),
-    },
-    t => [uniqueIndex().on(t.orderId, t.productId)],
-);
-
-export const reviewTable = pgTable(
-    "Review",
-    {
-        id: uuid().primaryKey().defaultRandom(),
-        userId: uuid()
-            .notNull()
-            .references(() => userTable.id),
-        productId: uuid()
-            .notNull()
-            .references(() => productTable.id),
-        rating: smallint().notNull(),
-        comment: varchar({ length: 500 }),
-        ...timestamps,
-    },
-    t => [uniqueIndex().on(t.userId, t.productId)],
-);
