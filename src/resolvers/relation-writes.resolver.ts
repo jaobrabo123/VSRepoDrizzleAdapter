@@ -26,7 +26,7 @@
  * (unlike Prisma, which resolves nested writes against its full schema).
  */
 
-import { and, eq, ne, notInArray } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { DrizzleTransactionLike } from "../types/drizzle-transaction-like.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
@@ -99,7 +99,7 @@ async function resolveFkHereField(
     relation: ResolvedRelation,
     field: PlainObject | null,
     currentFkValue: unknown,
-): Promise<unknown | typeof SKIP> {
+): Promise<unknown> {
     const relatedTable = relation.table as unknown as PlainObject;
     const pkColumn = relatedTable[relation.relatedPk];
 

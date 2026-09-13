@@ -100,9 +100,7 @@ function isObjectRelationFilter(value: PlainObject): boolean {
 function buildFieldOperators(column: any, ops: PlainObject): SQL | undefined {
     const parts: SQL[] = [];
     const likeFn =
-        ops.ignoreCase === true
-            ? (column: any, pattern: string) => sql`lower(${column}) like lower(${pattern})`
-            : like;
+        ops.ignoreCase === true ? (column: any, pattern: string) => sql`lower(${column}) like lower(${pattern})` : like;
 
     for (const [key, val] of Object.entries(ops)) {
         if (val === undefined) continue;
@@ -191,7 +189,12 @@ function buildExists(relation: ResolvedRelation, condition: SQL, ctx: SqlWhereCo
     return exists(subquery);
 }
 
-function buildRelationCondition(key: string, value: PlainObject, relation: ResolvedRelation, ctx: SqlWhereContext): SQL {
+function buildRelationCondition(
+    key: string,
+    value: PlainObject,
+    relation: ResolvedRelation,
+    ctx: SqlWhereContext,
+): SQL {
     const nestedCtx: SqlWhereContext = { ...ctx, table: relation.table, relations: undefined };
 
     if (isArrayRelationFilter(value)) {

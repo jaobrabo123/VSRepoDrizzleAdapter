@@ -1,6 +1,5 @@
 import { VSRepoSelect } from "vsrepo";
 import { PlainObject } from "../types/plain-object.type.js";
-import { isPlainObject } from "../validators/is-plain-object.validator.js";
 
 /**
  * Result of parsing a `VSRepoSelect<T>` into Drizzle's relational query
