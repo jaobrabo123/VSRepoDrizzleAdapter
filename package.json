@@ -1,6 +1,6 @@
 {
   "name": "@vsrepo/drizzle-adapter",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "author": {
     "email": "joaodev.azevedo@outlook.com",
     "url": "https://github.com/jaobrabo123",
@@ -68,7 +68,8 @@
     "test:watch": "vitest",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
-    "lint": "oxlint --type-aware src/ test/"
+    "lint": "oxlint --type-aware src/ test/",
+    "prepack": "bun run build"
   },
   "type": "module",
   "types": "./dist/index.d.ts",
