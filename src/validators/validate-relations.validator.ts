@@ -23,7 +23,7 @@
  * owning record is inserted).
  */
 
-import { getTableColumns, getTableName, is, Table } from "drizzle-orm";
+import { getColumns, getTableName, is, Table } from "drizzle-orm";
 import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { AdapterRelations } from "../types/adapter-relations.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
@@ -47,10 +47,12 @@ export function validateRelations<T>(
     if (relations === undefined) return undefined;
 
     if (!isPlainObject(relations)) {
-        fail("Invalid constructor config (relations): expected an object mapping relation field names to their config.");
+        fail(
+            "Invalid constructor config (relations): expected an object mapping relation field names to their config.",
+        );
     }
 
-    const hereColumns = new Set(Object.keys(getTableColumns(table)));
+    const hereColumns = new Set(Object.keys(getColumns(table)));
     const resolved = new Map<string, ResolvedRelation>();
 
     for (const [key, rawRelation] of Object.entries(relations as PlainObject)) {
@@ -83,7 +85,7 @@ export function validateRelations<T>(
             );
         }
 
-        const thereColumns = new Set(Object.keys(getTableColumns(relatedTable)));
+        const thereColumns = new Set(Object.keys(getColumns(relatedTable)));
 
         if (mode === "otm") {
             if (fkHere !== undefined) {
@@ -149,7 +151,7 @@ export function validateRelations<T>(
         }
 
         // Throws INVALID_ADAPTER_CONFIG (reused error code) if the related table has no pk.
-        const relatedFieldsConfig = resolveFieldsConfig(relatedTable, dialect);
+        const relatedFieldsConfig = resolveFieldsConfig(relatedTable);
 
         resolved.set(key, {
             mode,

@@ -5,14 +5,7 @@ import { DrizzleDbLike } from "../types/drizzle-db-like.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
 import { SupportedDialects } from "../types/supported-dialects.type.js";
 
-const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set([
-    "postgresql",
-    "mysql",
-    "sqlite",
-    "singlestore",
-    "mssql",
-    "cockroach",
-]);
+const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set(["postgresql", "sqlite", "cockroach"]);
 
 /**
  * Validates the two arguments received by `DrizzleAdapter`'s constructor

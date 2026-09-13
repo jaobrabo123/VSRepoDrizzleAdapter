@@ -11,7 +11,12 @@
  *  - `not` (value or operator): { name: { not: "Ana" } }            -> { name: { NOT: "Ana" } }
  *                                { name: { not: { contains: "an" } } }
  *  - Strings:                   { name: { contains: "ana" } }      -> { like: "%ana%" }
- *                                { name: { contains: "ana", ignoreCase: true } } -> { ilike: "%ana%" }
+ *                                { name: { contains: "ana", ignoreCase: true } } -> { ilike: "%ana%" } on
+ *                                postgresql/cockroach (the only dialects with a real `ILIKE` operator); on
+ *                                sqlite, `ignoreCase` is a no-op — plain `LIKE` is already case-insensitive
+ *                                for ASCII there by default (`PRAGMA case_sensitive_like` is OFF unless the
+ *                                app explicitly turns it on), so using the (nonexistent, dialect-specific)
+ *                                `ilike` operator there would just be a SQL syntax error for no behavioral gain.
  *  - To-many relation (array):  { posts: { _some: { title: "x" } } } -> { posts: { title: "x" } }
  *                                Drizzle's relational filter has no native `every`/`none` semantics for
  *                                to-many relations (only an implicit `some`/exists filter) — `_every`/`_none`
@@ -31,6 +36,7 @@
 
 import { AdapterErrorCode, VSRepoAdapterError, VSRepoWhere } from "vsrepo";
 import { PlainObject } from "../types/plain-object.type.js";
+import { SupportedDialects } from "../types/supported-dialects.type.js";
 import { isPlainObject } from "../validators/is-plain-object.validator.js";
 
 /** Keys recognized as a `VSRepoFieldOperators` object. */
@@ -63,9 +69,12 @@ function isObjectRelationFilter(value: PlainObject): boolean {
 }
 
 /** Converts a `VSRepoFieldOperators<V>` into a Drizzle relational field filter. */
-function parseFieldOperators(value: PlainObject): PlainObject {
+function parseFieldOperators(value: PlainObject, dialect: SupportedDialects): PlainObject {
     const result: PlainObject = {};
-    const likeKey = value.ignoreCase === true ? "ilike" : "like";
+    // Only postgresql/cockroach have a real `ILIKE` operator — on sqlite, plain `LIKE` is
+    // already case-insensitive for ASCII by default, so `ignoreCase` is a no-op there
+    // rather than emitting the (dialect-specific, would-be-invalid-SQL) `ilike` key.
+    const likeKey = value.ignoreCase === true && dialect !== "sqlite" ? "ilike" : "like";
 
     for (const [key, val] of Object.entries(value)) {
         if (val === undefined) continue;
@@ -99,7 +108,7 @@ function parseFieldOperators(value: PlainObject): PlainObject {
                 break;
 
             case "not":
-                result.NOT = isPlainObject(val) && isFieldOperatorObject(val) ? parseFieldOperators(val) : val;
+                result.NOT = isPlainObject(val) && isFieldOperatorObject(val) ? parseFieldOperators(val, dialect) : val;
                 break;
 
             default:
@@ -112,7 +121,7 @@ function parseFieldOperators(value: PlainObject): PlainObject {
 }
 
 /** Converts `{ _some, _every, _none }` into the filter applied to a to-many relation field. */
-function parseArrayRelationFilter(value: PlainObject): PlainObject {
+function parseArrayRelationFilter(value: PlainObject, dialect: SupportedDialects): PlainObject {
     if (value._every !== undefined || value._none !== undefined) {
         throw new VSRepoAdapterError(
             "Drizzle's relational query API has no native 'every'/'none' filter for to-many relations (only an " +
@@ -123,22 +132,22 @@ function parseArrayRelationFilter(value: PlainObject): PlainObject {
         );
     }
 
-    return parsePlainWhere(value._some) ?? {};
+    return parsePlainWhere(value._some, dialect) ?? {};
 }
 
 /** Converts `{ _with, _without }` into the filter applied to a to-one relation field. */
-function parseObjectRelationFilter(value: PlainObject): PlainObject {
+function parseObjectRelationFilter(value: PlainObject, dialect: SupportedDialects): PlainObject {
     if (value._with !== undefined) {
-        return parsePlainWhere(value._with) ?? {};
+        return parsePlainWhere(value._with, dialect) ?? {};
     }
     if (value._without !== undefined) {
-        return { NOT: parsePlainWhere(value._without) };
+        return { NOT: parsePlainWhere(value._without, dialect) };
     }
     return {};
 }
 
 /** Decides how to interpret the value of a single where field. */
-function parseFieldValue(value: unknown): unknown {
+function parseFieldValue(value: unknown, dialect: SupportedDialects): unknown {
     // Primitive values (string, number, boolean, Date, null, bigint) pass through
     // as-is — Drizzle's own shorthand for `eq`.
     if (value === null || typeof value !== "object" || value instanceof Date) {
@@ -152,33 +161,33 @@ function parseFieldValue(value: unknown): unknown {
 
     const obj = value as PlainObject;
 
-    if (isArrayRelationFilter(obj)) return parseArrayRelationFilter(obj);
-    if (isObjectRelationFilter(obj)) return parseObjectRelationFilter(obj);
-    if (isFieldOperatorObject(obj)) return parseFieldOperators(obj);
+    if (isArrayRelationFilter(obj)) return parseArrayRelationFilter(obj, dialect);
+    if (isObjectRelationFilter(obj)) return parseObjectRelationFilter(obj, dialect);
+    if (isFieldOperatorObject(obj)) return parseFieldOperators(obj, dialect);
 
     // fallback: nested to-one filter passed directly, without a `_with`/`_without` wrapper
-    return parsePlainWhere(obj);
+    return parsePlainWhere(obj, dialect);
 }
 
 /**
  * Converts a `VSRepoWherePlain<T>` (no root `AND`/`OR`/`NOT`) — used for the
  * body of relation filters (`_some`/`_every`/`_none`/`_with`/`_without`).
  */
-function parsePlainWhere(where: PlainObject | undefined | null): PlainObject | undefined {
+function parsePlainWhere(where: PlainObject | undefined | null, dialect: SupportedDialects): PlainObject | undefined {
     if (where === undefined || where === null) return undefined;
 
     const result: PlainObject = {};
 
     for (const [key, value] of Object.entries(where)) {
         if (value === undefined) continue;
-        result[key] = parseFieldValue(value);
+        result[key] = parseFieldValue(value, dialect);
     }
 
     return result;
 }
 
 /** Converts a full `VSRepoWhere<T>` (root level, with `AND`/`OR`/`NOT`) into a Drizzle relational filter. */
-function parseWhere(where: PlainObject | undefined | null): PlainObject | undefined {
+function parseWhere(where: PlainObject | undefined | null, dialect: SupportedDialects): PlainObject | undefined {
     if (where === undefined || where === null) return undefined;
 
     const result: PlainObject = {};
@@ -192,26 +201,26 @@ function parseWhere(where: PlainObject | undefined | null): PlainObject | undefi
 
         if (key === "AND") {
             const list = Array.isArray(value) ? value : [value];
-            andList = [...(andList ?? []), ...list.map(v => parseWhere(v)!)];
+            andList = [...(andList ?? []), ...list.map(v => parseWhere(v, dialect)!)];
             continue;
         }
 
         if (key === "OR") {
             const list = Array.isArray(value) ? value : [value];
-            result.OR = list.map(v => parseWhere(v));
+            result.OR = list.map(v => parseWhere(v, dialect));
             continue;
         }
 
         if (key === "NOT") {
             if (Array.isArray(value)) {
-                andList = [...(andList ?? []), ...value.map(v => ({ NOT: parseWhere(v) }))];
+                andList = [...(andList ?? []), ...value.map(v => ({ NOT: parseWhere(v, dialect) }))];
             } else {
-                result.NOT = parseWhere(value);
+                result.NOT = parseWhere(value, dialect);
             }
             continue;
         }
 
-        result[key] = parseFieldValue(value);
+        result[key] = parseFieldValue(value, dialect);
     }
 
     if (andList) result.AND = andList;
@@ -223,8 +232,11 @@ function parseWhere(where: PlainObject | undefined | null): PlainObject | undefi
  * Use the second generic to type the return with the specific
  * `RelationsFilter<...>` for your table, if desired.
  */
-export function parseDrizzleWhere<T, W = any>(where: VSRepoWhere<T> | undefined | null): W | undefined {
-    return parseWhere(where as PlainObject | undefined | null) as W | undefined;
+export function parseDrizzleWhere<T, W = any>(
+    where: VSRepoWhere<T> | undefined | null,
+    dialect: SupportedDialects,
+): W | undefined {
+    return parseWhere(where as PlainObject | undefined | null, dialect) as W | undefined;
 }
 
 /**

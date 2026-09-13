@@ -4,10 +4,7 @@ import { SupportedDialects } from "../types/supported-dialects.type.js";
 const PLACEHOLDER_PATTERNS: Record<SupportedDialects, RegExp> = {
     postgresql: /\$(\d+)/g,
     cockroach: /\$(\d+)/g,
-    mysql: /\?/g,
-    singlestore: /\?/g,
     sqlite: /\?/g,
-    mssql: /@p(\d+)/gi,
 };
 
 /**
@@ -16,7 +13,7 @@ const PLACEHOLDER_PATTERNS: Record<SupportedDialects, RegExp> = {
  * (e.g. `$1 ... $1`) and must resolve to the same argument every time.
  * `?`-style placeholders have no index, so they stay strictly positional.
  */
-const NUMBERED_DIALECTS = new Set<SupportedDialects>(["postgresql", "cockroach", "mssql"]);
+const NUMBERED_DIALECTS = new Set<SupportedDialects>(["postgresql", "cockroach"]);
 
 export function resolveRawSql(dialect: SupportedDialects, query: string, args: unknown[] = []): SQL {
     const pattern = PLACEHOLDER_PATTERNS[dialect];

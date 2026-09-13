@@ -41,8 +41,6 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly db: DrizzleDbLike;
     private readonly dialect: SupportedDialects;
     private readonly pk: string;
-    private readonly uniqueFields: string[];
-    private readonly allFieldsRecord: string[];
     private readonly queryKey: keyof K["query"];
     private readonly relations?: Map<string, ResolvedRelation>;
 
@@ -56,10 +54,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         this.dialect = validated.config.dialect ?? "postgresql";
         this.queryKey = validated.config.queryKey;
 
-        const fieldsConfig = resolveFieldsConfig(this.table, this.dialect);
+        const fieldsConfig = resolveFieldsConfig(this.table);
         this.pk = fieldsConfig.pk;
-        this.uniqueFields = fieldsConfig.uniqueFields;
-        this.allFieldsRecord = fieldsConfig.allFields;
 
         this.relations = validateRelations<T>(this.table, this.dialect, validated.config.relations);
     }
@@ -163,7 +159,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         opts?: { db?: unknown; order?: AdapterMethodOptions<T>["order"]; limit?: number; offset?: number },
     ): Promise<{ where: PlainObject | undefined; orderBy?: PlainObject; paginationApplied: boolean }> {
         if (!hasQuantifierFilter(where)) {
-            return { where: parseDrizzleWhere<T>(where), paginationApplied: false };
+            return { where: parseDrizzleWhere<T>(where, this.dialect), paginationApplied: false };
         }
 
         const executor = (opts?.db as DrizzleDbLike | undefined) ?? this.db;
@@ -180,7 +176,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         const pks = rows.map((row: PlainObject) => row.pk);
 
         return {
-            where: parseDrizzleWhere<T>({ [this.pk]: { in: pks } } as unknown as VSRepoWhere<T>),
+            where: parseDrizzleWhere<T>({ [this.pk]: { in: pks } } as unknown as VSRepoWhere<T>, this.dialect),
             orderBy: parseOrderBy<T>(opts?.order),
             paginationApplied: opts?.limit !== undefined || opts?.offset !== undefined,
         };

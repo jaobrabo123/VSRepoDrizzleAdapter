@@ -42,7 +42,6 @@ import {
     getTableName,
     gt,
     gte,
-    ilike,
     inArray,
     isNotNull,
     isNull,
@@ -100,7 +99,10 @@ function isObjectRelationFilter(value: PlainObject): boolean {
 /** Converts a `VSRepoFieldOperators<V>` object into a single (possibly `AND`-combined) `SQL` condition. */
 function buildFieldOperators(column: any, ops: PlainObject): SQL | undefined {
     const parts: SQL[] = [];
-    const likeFn = ops.ignoreCase === true ? ilike : like;
+    const likeFn =
+        ops.ignoreCase === true
+            ? (column: any, pattern: string) => sql`lower(${column}) like lower(${pattern})`
+            : like;
 
     for (const [key, val] of Object.entries(ops)) {
         if (val === undefined) continue;

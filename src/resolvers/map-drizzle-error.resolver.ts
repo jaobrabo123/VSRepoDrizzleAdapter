@@ -5,7 +5,6 @@ import { SupportedDialects } from "../types/supported-dialects.type.js";
 /** Duck-typed shape of the handful of native driver error properties this mapper reads. */
 type DriverLikeError = {
     code?: string | number;
-    number?: number;
     message?: string;
 };
 
@@ -35,32 +34,6 @@ const POSTGRES_SQLSTATE_MAP: Record<string, AdapterErrorCode> = {
 };
 
 /**
- * MySQL/SingleStore error code -> AdapterErrorCode (assumes `mysql2`, the
- * officially supported driver for these dialects).
- * @see https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
- */
-const MYSQL_CODE_MAP: Record<string, AdapterErrorCode> = {
-    ER_DUP_ENTRY: AdapterErrorCode.UNIQUE_CONSTRAINT_VIOLATION,
-    ER_NO_REFERENCED_ROW: AdapterErrorCode.FOREIGN_KEY_VIOLATION,
-    ER_NO_REFERENCED_ROW_2: AdapterErrorCode.FOREIGN_KEY_VIOLATION,
-    ER_ROW_IS_REFERENCED: AdapterErrorCode.FOREIGN_KEY_VIOLATION,
-    ER_ROW_IS_REFERENCED_2: AdapterErrorCode.FOREIGN_KEY_VIOLATION,
-    ER_BAD_NULL_ERROR: AdapterErrorCode.NOT_NULL_VIOLATION,
-    ER_CHECK_CONSTRAINT_VIOLATED: AdapterErrorCode.CHECK_VIOLATION,
-    ER_DATA_TOO_LONG: AdapterErrorCode.VALUE_TOO_LONG,
-    ER_TRUNCATED_WRONG_VALUE: AdapterErrorCode.CONVERSION_ERROR,
-    ER_PARSE_ERROR: AdapterErrorCode.INVALID_QUERY,
-    ER_NO_SUCH_TABLE: AdapterErrorCode.TABLE_OR_COLUMN_NOT_FOUND,
-    ER_BAD_FIELD_ERROR: AdapterErrorCode.TABLE_OR_COLUMN_NOT_FOUND,
-    ER_LOCK_DEADLOCK: AdapterErrorCode.DEADLOCK,
-    ER_LOCK_WAIT_TIMEOUT: AdapterErrorCode.LOCK_TIMEOUT,
-    ER_ACCESS_DENIED_ERROR: AdapterErrorCode.INVALID_CREDENTIALS,
-    PROTOCOL_CONNECTION_LOST: AdapterErrorCode.CONNECTION_CLOSED,
-    ETIMEDOUT: AdapterErrorCode.TIMEOUT,
-    ECONNREFUSED: AdapterErrorCode.CONNECTION_FAILED,
-};
-
-/**
  * SQLite result code -> AdapterErrorCode (assumes `better-sqlite3`, the
  * officially supported driver for this dialect).
  * @see https://www.sqlite.org/rescode.html
@@ -78,41 +51,14 @@ const SQLITE_CODE_MAP: Record<string, AdapterErrorCode> = {
     SQLITE_CANTOPEN: AdapterErrorCode.CONNECTION_FAILED,
 };
 
-/**
- * SQL Server error number -> AdapterErrorCode (assumes the `mssql` package,
- * the officially supported driver for this dialect). Not exhaustive — only
- * the most common, actionable errors are listed.
- * @see https://learn.microsoft.com/sql/relational-databases/errors-events/database-engine-events-and-errors
- */
-const MSSQL_NUMBER_MAP: Record<number, AdapterErrorCode> = {
-    2627: AdapterErrorCode.UNIQUE_CONSTRAINT_VIOLATION,
-    2601: AdapterErrorCode.UNIQUE_CONSTRAINT_VIOLATION,
-    547: AdapterErrorCode.CONSTRAINT_VIOLATION,
-    515: AdapterErrorCode.NOT_NULL_VIOLATION,
-    8152: AdapterErrorCode.VALUE_TOO_LONG,
-    245: AdapterErrorCode.CONVERSION_ERROR,
-    207: AdapterErrorCode.TABLE_OR_COLUMN_NOT_FOUND,
-    208: AdapterErrorCode.TABLE_OR_COLUMN_NOT_FOUND,
-    1205: AdapterErrorCode.DEADLOCK,
-    1222: AdapterErrorCode.LOCK_TIMEOUT,
-    18456: AdapterErrorCode.INVALID_CREDENTIALS,
-};
-
 function resolveCodeFromDriverError(dialect: SupportedDialects, error: DriverLikeError): AdapterErrorCode | undefined {
     switch (dialect) {
         case "postgresql":
         case "cockroach":
             return typeof error.code === "string" ? POSTGRES_SQLSTATE_MAP[error.code] : undefined;
 
-        case "mysql":
-        case "singlestore":
-            return typeof error.code === "string" ? MYSQL_CODE_MAP[error.code] : undefined;
-
         case "sqlite":
             return typeof error.code === "string" ? SQLITE_CODE_MAP[error.code] : undefined;
-
-        case "mssql":
-            return typeof error.number === "number" ? MSSQL_NUMBER_MAP[error.number] : undefined;
     }
 }
 

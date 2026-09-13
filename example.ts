@@ -1,4 +1,4 @@
-import { InferSelectModel } from "drizzle-orm";
+import { getColumns, InferSelectModel } from "drizzle-orm";
 import { orderTable, userTable } from "./dev/drizzle/schema.js";
 import { DynamicMethod, QueryMethod, VSRepository } from "vsrepo";
 import { db } from "./dev/drizzle/db.js";
@@ -67,3 +67,5 @@ const userUpdated = await userRepository.save(newUser, { relations: { orders: tr
 console.log(userUpdated);
 
 await userRepository.deleteByEmail(newUser.email);
+
+console.log(getColumns(userTable));
