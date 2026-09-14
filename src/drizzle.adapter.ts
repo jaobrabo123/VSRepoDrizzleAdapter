@@ -58,7 +58,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         const fieldsConfig = resolveFieldsConfig(this.table);
         this.pk = fieldsConfig.pk;
 
-        this.relations = validateRelations<T>(this.table, this.dialect, validated.config.relations);
+        this.relations = validateRelations<T>(this.table, validated.config.relations);
         if (this.relations) {
             this.relationsKeysSet = new Set(Object.keys(this.relations));
         }
@@ -553,6 +553,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
             const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, options);
             const result = await this.getQueryBuilder(tx).findFirst(readArg);
+
+            if (!result) {
+                throw new VSRepoAdapterError(
+                    "The entity record was removed for some reason after processing its update payload." +
+                        " Common causes: providing a one-to-one fkHere relation as `null` when it is configured with `onDelete: Cascade`.",
+                    AdapterErrorCode.NOT_FOUND,
+                    null,
+                );
+            }
 
             return result as T;
         });

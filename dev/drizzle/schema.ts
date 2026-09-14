@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, uuid, varchar, timestamp, char } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, varchar, timestamp, char, integer } from "drizzle-orm/pg-core";
 import { Role } from "../enum/role.enum.js";
 
 export const timestamps = {
@@ -39,6 +39,7 @@ export const postTable = pgTable("Post", {
     title: varchar({ length: 100 }).notNull(),
     content: varchar({ length: 1000 }).notNull(),
     categoryId: uuid().references(() => categoryTable.id, { onDelete: "set null" }),
+    views: integer().notNull().default(0),
     userId: uuid()
         .notNull()
         .references(() => userTable.id, { onDelete: "cascade" }),

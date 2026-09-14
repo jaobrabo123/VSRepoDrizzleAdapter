@@ -1,10 +1,10 @@
 import { addressTable, postTable, userTable } from "./dev/drizzle/schema.js";
-import { DynamicMethod, QueryMethod, VSRepository } from "vsrepo";
+import { DynamicMethod, MethodOptions, QueryMethod, VSRepository } from "vsrepo";
 import { db } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
 import { Role } from "./dev/enum/role.enum.js";
-import { User } from "./dev/entities.js";
+import { Address, User } from "./dev/entities.js";
 
 class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof db>> {
     constructor() {
@@ -24,6 +24,7 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
                         restriction: "set",
                         table: addressTable,
                         fkThere: "userId",
+                        nullable: true,
                     },
                 },
             }),
@@ -41,7 +42,7 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
     declare insertUser: (name: string, role: Role, email: string, passwordHash: string) => Promise<number>;
 
     @DynamicMethod()
-    declare deleteByEmail: (email: string) => Promise<User>;
+    declare deleteByEmail: (email: string, options?: MethodOptions<User>) => Promise<User>;
 }
 
 const userRepository = new UserRepository();
@@ -52,18 +53,18 @@ const newUser = await userRepository.save(
         email: "pedro@email.com",
         role: Role.USER,
         passwordHash: "2615376123",
-        address: {
-            city: "New York",
-            state: "NY",
-        },
+        address: null,
     },
     { relations: { address: true } },
 );
 console.log(newUser);
 
-newUser.address!.city = "Some City";
+newUser.address = {
+    state: "ta",
+    city: "tabes",
+} as Address;
 
 const userUpdated = await userRepository.save(newUser, { relations: { address: true } });
 console.log(userUpdated);
 
-await userRepository.deleteByEmail(newUser.email);
+await userRepository.deleteByEmail(newUser.email, { select: { id: true } });

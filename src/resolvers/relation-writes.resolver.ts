@@ -82,18 +82,6 @@ export function splitWritePayload(
     return { scalarFields, fkHereEntries, fkThereEntries };
 }
 
-/**
- * Resolves one `fkHere` relation field (`mto`, or `oto` with the FK here)
- * into the value to put in this table's own `fkHere` column — creating,
- * connecting, or (on `restriction: "set"`) upserting the related record as
- * needed. Returns the `SKIP` sentinel when the field shouldn't be touched at
- * all (mirrors `data.parser.ts` returning `{}` for those same cases).
- *
- * `currentFkValue` is this table's own *current* value of the `fkHere`
- * column — only needed (and only passed on `update`) to find the
- * previously-linked related row when `restriction: "set"` + `field === null`
- * means "delete the related row that was here".
- */
 async function resolveFkHereField(
     tx: DrizzleTransactionLike,
     relation: ResolvedRelation,
@@ -104,16 +92,21 @@ async function resolveFkHereField(
     const pkColumn = relatedTable[relation.relatedPk];
 
     if (field === null) {
-        if (relation.mode === "mto" && relation.nullable) return null;
+        if (!relation.nullable) {
+            throw new VSRepoAdapterError(
+                `You cannot provide null for a to-one relation when it is not nullable.`,
+                AdapterErrorCode.INVALID_DATA,
+                null,
+            );
+        }
+        if (relation.mode === "mto") return null;
 
-        if (relation.mode === "oto" && relation.restriction === "set") {
-            if (currentFkValue !== undefined && currentFkValue !== null) {
-                await (tx as any).delete(relation.table).where(eq(pkColumn, currentFkValue));
-            }
-            return null;
+        // relation.mode === "oto"
+        if (relation.restriction === "set" && currentFkValue != undefined) {
+            await (tx as any).delete(relation.table).where(eq(pkColumn, currentFkValue));
         }
 
-        return SKIP;
+        return null;
     }
 
     const pkValue = field[relation.relatedPk];
@@ -248,8 +241,20 @@ async function resolveOtoFkThereField(
     const pkColumn = relatedTable[relation.relatedPk];
 
     if (field === null) {
+        if (!relation.nullable) {
+            throw new VSRepoAdapterError(
+                `You cannot provide null for a to-one relation when it is not nullable.`,
+                AdapterErrorCode.INVALID_DATA,
+                null,
+            );
+        }
         if (relation.restriction === "set") {
             await (tx as any).delete(relation.table).where(eq(fkColumn, ownPkValue));
+        } else {
+            await (tx as any)
+                .update(relation.table)
+                .set({ [fkColumn]: null })
+                .where(eq(fkColumn, ownPkValue));
         }
         return;
     }
@@ -257,13 +262,13 @@ async function resolveOtoFkThereField(
     const pkValue = field[relation.relatedPk];
     // let keepPk: unknown = pkValue;
 
-    const resolveSetData = async () => {
+    const resolveSetData = async (targetPk: unknown) => {
         const setData =
             relation.restriction === "set"
                 ? { ...omitKey(field, relation.relatedPk), [relation.fkThere as string]: ownPkValue }
                 : { [relation.fkThere as string]: ownPkValue };
 
-        await (tx as any).update(relation.table).set(setData).where(eq(pkColumn, pkValue));
+        await (tx as any).update(relation.table).set(setData).where(eq(pkColumn, targetPk));
     };
 
     if (pkValue === undefined) {
@@ -276,7 +281,7 @@ async function resolveOtoFkThereField(
         if (!otoRel) {
             await (tx as any).insert(relation.table).values({ ...field, [relation.fkThere as string]: ownPkValue });
         } else {
-            await resolveSetData();
+            await resolveSetData(otoRel.pk);
         }
 
         // keepPk = insertedRow?.[relation.relatedPk];
@@ -290,7 +295,7 @@ async function resolveOtoFkThereField(
         if (existing.length === 0) {
             await (tx as any).insert(relation.table).values({ ...field, [relation.fkThere as string]: ownPkValue });
         } else {
-            await resolveSetData();
+            await resolveSetData(pkValue);
         }
     }
 

@@ -28,7 +28,6 @@ import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { AdapterRelations } from "../types/adapter-relations.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
 import { ResolvedRelation } from "../types/resolved-relation.type.js";
-import { SupportedDialects } from "../types/supported-dialects.type.js";
 import { resolveFieldsConfig } from "../resolvers/fields-config.resolver.js";
 import { isPlainObject } from "./is-plain-object.validator.js";
 
@@ -41,7 +40,6 @@ function fail(message: string): never {
 
 export function validateRelations<T>(
     table: Table,
-    dialect: SupportedDialects,
     relations: AdapterRelations<T> | undefined,
 ): Map<string, ResolvedRelation> | undefined {
     if (relations === undefined) return undefined;
@@ -123,6 +121,10 @@ export function validateRelations<T>(
                 fail(`Invalid constructor config (relations.${key}.nullable): expected a boolean.`);
             }
         } else {
+            if (nullable !== undefined && typeof nullable !== "boolean") {
+                fail(`Invalid constructor config (relations.${key}.nullable): expected a boolean.`);
+            }
+
             const hasHere = fkHere !== undefined;
             const hasThere = fkThere !== undefined;
 

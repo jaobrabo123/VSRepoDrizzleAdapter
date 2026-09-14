@@ -18,7 +18,7 @@ export type ResolvedRelation = {
     fkHere?: string;
     /** Column of the *related* table holding the FK — set for `otm`, and for `oto` when the FK lives there. */
     fkThere?: string;
-    /** For `mto` only: whether the FK column accepts `null` (resolved as "disconnect"). */
+    /** For `mto` and `oto` only: whether the FK column accepts `null` (resolved as "disconnect"). */
     nullable?: boolean;
     /** Primary key column name of the related table. */
     relatedPk: string;
