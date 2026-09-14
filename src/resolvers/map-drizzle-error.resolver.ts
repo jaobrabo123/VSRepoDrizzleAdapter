@@ -79,7 +79,7 @@ export function mapDrizzleError(error: unknown, operation: string, dialect: Supp
     if (error instanceof TransactionRollbackError) {
         return new VSRepoAdapterError(
             `'${operation}' was rolled back intentionally via 'tx.rollback()'`,
-            AdapterErrorCode.UNKNOWN,
+            AdapterErrorCode.TRANSACTION_ROLLED_BACK,
             error,
         );
     }
