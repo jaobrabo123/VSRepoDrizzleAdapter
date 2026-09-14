@@ -435,12 +435,20 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     ): Promise<T[]> {
         try {
             const data = objs.map(obj => this.stripRelationFields(obj as unknown as PlainObject));
-            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+            return await this.runTransactional(options?.db, async tx => {
+                let qb = tx.insert(this.table).values(data);
+                if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
 
-            let qb = (executor as any).insert(this.table).values(data);
-            if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
+                const created = await qb.returning({ [this.pk]: (this.table as any)[this.pk] });
 
-            return (await qb.returning()) as T[];
+                const readArg = await this.resolveReadArgs(
+                    { [this.pk]: { in: created.map((_: any) => _[this.pk]) } } as unknown as VSRepoWhere<T>,
+                    options,
+                );
+                const result = await this.getQueryBuilder(tx).findMany(readArg);
+
+                return result as T[];
+            });
         } catch (error) {
             throw mapDrizzleError(error, "createManyReturning", this.dialect);
         }
@@ -486,10 +494,22 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
     async deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
         try {
-            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
-            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            return await this.runTransactional(options?.db, async tx => {
+                const condition = parseSqlWhere(where, this.getSqlWhereContext(tx));
 
-            return (await (executor as any).delete(this.table).where(condition).returning()) as T[];
+                const deleted = await tx
+                    .delete(this.table)
+                    .where(condition)
+                    .returning({ [this.pk]: (this.table as any)[this.pk] });
+
+                const readArg = await this.resolveReadArgs(
+                    { [this.pk]: { in: deleted.map((_: any) => _[this.pk]) } } as unknown as VSRepoWhere<T>,
+                    options,
+                );
+                const result = await this.getQueryBuilder(tx).findMany(readArg);
+
+                return result as T[];
+            });
         } catch (error) {
             throw mapDrizzleError(error, "deleteManyReturning", this.dialect);
         }
@@ -592,11 +612,24 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         options?: AdapterMethodOptions<T>,
     ): Promise<T[]> {
         try {
-            const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
             const data = this.stripRelationFields(obj as unknown as PlainObject);
-            const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            return await this.runTransactional(options?.db, async tx => {
+                const condition = parseSqlWhere(where, this.getSqlWhereContext(tx));
 
-            return (await (executor as any).update(this.table).set(data).where(condition).returning()) as T[];
+                const updated = await tx
+                    .update(this.table)
+                    .set(data)
+                    .where(condition)
+                    .returning({ [this.pk]: (this.table as any)[this.pk] });
+
+                const readArg = await this.resolveReadArgs(
+                    { [this.pk]: { in: updated.map((_: any) => _[this.pk]) } } as unknown as VSRepoWhere<T>,
+                    options,
+                );
+                const result = await this.getQueryBuilder(tx).findMany(readArg);
+
+                return result as T[];
+            });
         } catch (error) {
             throw mapDrizzleError(error, "updateManyReturning", this.dialect);
         }

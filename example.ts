@@ -1,5 +1,5 @@
 import { addressTable, postTable, userTable } from "./dev/drizzle/schema.js";
-import { DynamicMethod, MethodOptions, QueryMethod, VSRepository } from "vsrepo";
+import { DeepPartial, DynamicMethod, MethodOptions, QueryMethod, VSRepository } from "vsrepo";
 import { db } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
@@ -43,6 +43,9 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
 
     @DynamicMethod()
     declare deleteByEmail: (email: string, options?: MethodOptions<User>) => Promise<User>;
+
+    @DynamicMethod()
+    declare createManyReturning: (objs: DeepPartial<User>[], options?: MethodOptions<User>) => Promise<User[]>;
 }
 
 const userRepository = new UserRepository();
@@ -68,3 +71,28 @@ const userUpdated = await userRepository.save(newUser, { relations: { address: t
 console.log(userUpdated);
 
 await userRepository.deleteByEmail(newUser.email, { select: { id: true } });
+
+await userRepository
+    .transaction(async tx => {
+        const created = await userRepository.createManyReturning(
+            [
+                {
+                    name: "Pedro",
+                    email: "pedro@email.com",
+                    role: Role.USER,
+                    passwordHash: "2615376123",
+                },
+                {
+                    name: "Pedro 2",
+                    email: "pedro2@email.com",
+                    role: Role.USER,
+                    passwordHash: "asdyi8u2y3",
+                },
+            ],
+            { db: tx, relations: { address: true, posts: true } },
+        );
+        console.log(created);
+
+        tx.rollback();
+    })
+    .catch(console.log);
