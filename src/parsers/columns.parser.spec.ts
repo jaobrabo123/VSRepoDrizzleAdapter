@@ -165,6 +165,9 @@ describe("parseColumns", () => {
         });
     });
 
-    // TODO: Documentar que relations marcadas como true só são passadas para o campo with se elas foram configuradas no constructor
-    // e se a relation de uma relation estiver maracada como true (sem especificar os campos) ela também será entendida como uma column
+    // Observação documentada no README (seção "relations nas options (leitura)"):
+    // relations marcadas como `true` só são passadas para o campo `with` se elas
+    // foram configuradas no constructor (`relationsKeysSet`); e uma relation DE uma
+    // relation marcada como `true` (sem especificar os campos) também é entendida
+    // como uma column.
 });

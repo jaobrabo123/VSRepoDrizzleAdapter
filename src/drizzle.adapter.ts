@@ -34,6 +34,20 @@ import { mergeEntities } from "./resolvers/merge-entities.resolver.js";
 import { resolveFkHereFields, resolveFkThereFields, splitWritePayload } from "./resolvers/relation-writes.resolver.js";
 
 /**
+ * `VSRepoAdapter` implementation backed by Drizzle ORM.
+ *
+ * Translates every `VSRepository` operation into Drizzle calls:
+ * - **Reads** use the relational query API (`db.query[queryKey].findFirst/findMany`)
+ *   with `columns`, `with`, `where`, `orderBy`, `limit`, and `offset`.
+ * - **Writes** use the core query builders (`db.insert`, `db.update`, `db.delete`)
+ *   with imperative relation resolution when a `relations` config is provided.
+ * - **Raw SQL** uses `db.execute` with dialect-aware placeholder substitution.
+ *
+ * Supports PostgreSQL, SQLite, and CockroachDB dialects.
+ *
+ * @typeParam T - The entity type this adapter operates on.
+ * @typeParam K - The Drizzle database client type (inferred from the `db` argument).
+ *
  * @publicApi
  */
 export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends VSRepoAdapter<T> {
@@ -45,6 +59,18 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly relations?: Map<string, ResolvedRelation>;
     private readonly relationsKeysSet?: Set<string>;
 
+    /**
+     * Creates a new Drizzle adapter instance.
+     *
+     * The constructor validates the provided `db` client and `config` (table, queryKey,
+     * dialect, relations) and throws a `VSRepoAdapterError` if any field is invalid.
+     * The primary key is auto-detected from the Drizzle table's column definitions.
+     *
+     * @param db - The Drizzle database client instance.
+     * @param config - Adapter configuration: table, queryKey, optional dialect and relations.
+     *
+     * @publicApi
+     */
     constructor(db: K, config: DrizzleAdapterConfig<T, K>) {
         super();
 
@@ -83,6 +109,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      *
      * Per the adapter contract: when both `select` and `relations` are
      * given, `select` wins and `relations` is ignored entirely.
+     *
+     * When `select` contains a relation field marked as `true`, `parseColumns`
+     * only routes it to `with` if that field is configured in the constructor's
+     * `relations` (the `relationsKeysSet`) — otherwise it's treated as a column
+     * and the query fails. Nested relations marked as `true` inside a `select`
+     * object are always treated as columns (see `parseColumns` docs).
      */
     private async resolveReadArgs(
         where: VSRepoWhere<T>,
@@ -241,6 +273,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         return ((db as DrizzleDbLike) ?? this.db).transaction(fn);
     }
 
+    /**
+     * Executes `fn` inside a new database transaction.
+     *
+     * Supports `isolationLevel` but does **not** support `timeoutMs` (throws `NOT_SUPPORTED`).
+     *
+     * @param fn - Callback receiving the transaction client. Call `tx.rollback()` to abort.
+     * @param options - Optional transaction options (`isolationLevel`).
+     * @returns The value returned by `fn`.
+     *
+     * @publicApi
+     */
     async runInTransaction<R>(
         fn: (tx: DrizzleTransactionLike) => Promise<R>,
         options?: VSRepoTransactionOptions,
@@ -262,10 +305,26 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Returns the root Drizzle database client passed to the constructor.
+     *
+     * @publicApi
+     */
     getDbClient(): DrizzleDbLike {
         return this.db;
     }
 
+    /**
+     * Executes a raw SQL query string against the database.
+     *
+     * Placeholders are dialect-aware: `$1, $2, ...` for PostgreSQL/CockroachDB, `?` for SQLite.
+     *
+     * @param rawQuery - The raw SQL string.
+     * @param options - Optional: `args` (bind parameters), `db` (transaction client), `modifying` (if `true`, returns affected row count instead of rows).
+     * @returns The query result — rows for SELECT, affected count for modifying statements.
+     *
+     * @publicApi
+     */
     async query<R = any>(rawQuery: string, options?: AdapterQueryOptions): Promise<R> {
         const executor = (options?.db as DrizzleTransactionLike | undefined) ?? this.db;
 
@@ -279,6 +338,11 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Finds the first record matching `where`, or returns `null` if none exists.
+     *
+     * @publicApi
+     */
     async findOne(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T | null> {
         try {
             const arg = await this.resolveReadArgs(where, options, true);
@@ -290,6 +354,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Finds the first record matching `where`, or throws a `VSRepoAdapterError`
+     * (code `NOT_FOUND`) if none exists.
+     *
+     * @publicApi
+     */
     async findOneOrThrow(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
             const arg = await this.resolveReadArgs(where, options, true);
@@ -309,6 +379,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Finds all records matching `where`.
+     *
+     * Does **not** support `distinct` — passing it throws `NOT_SUPPORTED` (Drizzle's relational
+     * query API has no `distinct` option).
+     *
+     * @publicApi
+     */
     async findMany(
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T> & { distinct?: (keyof T)[] },
@@ -330,6 +408,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Creates or updates (upserts) a single record.
+     *
+     * If the payload has no primary key value, delegates to {@link create}. Otherwise,
+     * checks if a record with that PK exists: if it does, updates it; if not, creates it.
+     * Relation fields are resolved according to the constructor `relations` config.
+     *
+     * @publicApi
+     */
     async save(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
             const objAny = obj as unknown as PlainObject;
@@ -362,6 +449,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Creates or updates multiple records in a single transaction.
+     *
+     * Each object in `objs` is passed to {@link save} individually, all within the same
+     * transaction. If `options.db` is already a transaction, it's reused.
+     *
+     * @publicApi
+     */
     async saveMany(objs: DeepPartial<T>[], options?: AdapterMethodOptions<T>): Promise<T[]> {
         try {
             return await this.runTransactional(options?.db, tx =>
@@ -372,6 +467,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Inserts a new record into the database.
+     *
+     * Relation fields are resolved according to the constructor `relations` config:
+     * `fkHere` relations are resolved before the main insert, `fkThere` relations after.
+     * Returns the full entity (with relations, if requested via `options`).
+     *
+     * @publicApi
+     */
     async create(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
             return await this.runTransactional(options?.db, async tx => {
@@ -407,6 +511,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Inserts multiple records in a single batch statement.
+     *
+     * Does **not** support relation fields in the payload — throws `NOT_SUPPORTED` if any
+     * configured relation field is present. Use {@link create} or {@link saveMany} for nested writes.
+     *
+     * @publicApi
+     */
     async createMany(
         objs: DeepPartial<T>[],
         options?: AdapterMethodOptions<T> & { ignoreConflicts?: boolean },
@@ -427,6 +539,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Inserts multiple records and returns the created entities.
+     *
+     * Does **not** support relation fields in the payload. The returned records are
+     * re-queried via `findMany` by PK, so order is not guaranteed unless `order` is provided.
+     *
+     * @publicApi
+     */
     async createManyReturning(
         objs: DeepPartial<T>[],
         options?: AdapterMethodOptions<T> & { ignoreConflicts?: boolean },
@@ -452,6 +572,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Deletes a single record matching `where` and returns it.
+     *
+     * Throws `NOT_FOUND` if no record matches.
+     *
+     * @publicApi
+     */
     async delete(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
             return await this.runTransactional(options?.db, async tx => {
@@ -476,6 +603,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Deletes all records matching `where`.
+     *
+     * @returns A `CountResult` with the number of deleted rows.
+     *
+     * @publicApi
+     */
     async deleteMany(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<CountResult> {
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
@@ -490,6 +624,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Deletes all records matching `where` and returns them.
+     *
+     * Runs a `findMany` first (to capture the records), then a `deleteMany` with the same
+     * `where`. Under concurrency, the returned records and the actually deleted rows may diverge.
+     *
+     * @publicApi
+     */
     async deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
         try {
             return await this.runTransactional(options?.db, async tx => {
@@ -506,6 +648,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Updates a single record matching `where` with the provided data.
+     *
+     * Relation fields are resolved according to the constructor `relations` config.
+     * Throws `NOT_FOUND` if no record matches.
+     *
+     * @publicApi
+     */
     async update(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
             return await this.updateCore(where, obj, options);
@@ -578,6 +728,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         });
     }
 
+    /**
+     * Updates all records matching `where` with the provided scalar data.
+     *
+     * Does **not** support relation fields in the payload — throws `NOT_SUPPORTED`.
+     *
+     * @returns A `CountResult` with the number of updated rows.
+     *
+     * @publicApi
+     */
     async updateMany(
         where: VSRepoWhere<T>,
         obj: DeepPartial<T>,
@@ -597,6 +756,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Updates all records matching `where` and returns the updated entities.
+     *
+     * Does **not** support relation fields in the payload. The returned records are
+     * re-queried via `findMany` by PK, so order is not guaranteed unless `order` is provided.
+     *
+     * @publicApi
+     */
     async updateManyReturning(
         where: VSRepoWhere<T>,
         obj: DeepPartial<T>,
@@ -626,6 +793,11 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Counts the number of records matching `where`.
+     *
+     * @publicApi
+     */
     async count(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number> {
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
@@ -638,6 +810,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Returns `true` if at least one record matches `where`, `false` otherwise.
+     *
+     * Uses `SELECT 1 ... LIMIT 1` for efficiency.
+     *
+     * @publicApi
+     */
     async exists(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<boolean> {
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
@@ -654,6 +833,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Fetches the record matching `where` and deep-merges it **in memory** with `obj`.
+     *
+     * Does **not** persist anything — the merged result is returned for you to pass to
+     * `save`/`update` yourself. For to-many relations, items are matched by primary key.
+     *
+     * @publicApi
+     */
     async merge<K>(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<K & T> {
         try {
             const readArg = await this.resolveReadArgs(where, options);
@@ -674,6 +861,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Creates or updates a record: if a record matching `where` exists, updates it with
+     * `update`; otherwise, creates a new record with `create`.
+     *
+     * Relation fields are resolved in both the create and update paths.
+     *
+     * @publicApi
+     */
     async upsert(
         where: VSRepoWhere<T>,
         create: DeepPartial<T>,
@@ -748,6 +943,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Atomically increments a numeric field by `value` on the record matching `where`.
+     *
+     * Translates to `UPDATE ... SET field = field + value` — evaluated server-side.
+     *
+     * @publicApi
+     */
     incrementOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
@@ -757,6 +959,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         return this.atomicUpdate("incrementOne", field, (column, v) => sql`${column} + ${v}`, value, where, options);
     }
 
+    /**
+     * Atomically decrements a numeric field by `value` on the record matching `where`.
+     *
+     * Translates to `UPDATE ... SET field = field - value` — evaluated server-side.
+     *
+     * @publicApi
+     */
     decrementOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
@@ -766,6 +975,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         return this.atomicUpdate("decrementOne", field, (column, v) => sql`${column} - ${v}`, value, where, options);
     }
 
+    /**
+     * Atomically multiplies a numeric field by `value` on the record matching `where`.
+     *
+     * Translates to `UPDATE ... SET field = field * value` — evaluated server-side.
+     *
+     * @publicApi
+     */
     multiplyOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
@@ -775,6 +991,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         return this.atomicUpdate("multiplyOne", field, (column, v) => sql`${column} * ${v}`, value, where, options);
     }
 
+    /**
+     * Atomically divides a numeric field by `value` on the record matching `where`.
+     *
+     * Translates to `UPDATE ... SET field = field / value` — evaluated server-side.
+     *
+     * @publicApi
+     */
     divideOne<K extends NumericKeys<T>>(
         field: K,
         value: NonNullable<T[K]>,
@@ -810,18 +1033,46 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         }
     }
 
+    /**
+     * Returns the sum of `field` across all records matching `where` (or all records if `where` is omitted).
+     *
+     * Returns `null` over an empty result set (mirrors SQL `SUM()` behavior).
+     *
+     * @publicApi
+     */
     sum(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
         return this.aggregate("sum", sumFn, field, where, options);
     }
 
+    /**
+     * Returns the average of `field` across all records matching `where`.
+     *
+     * Returns `null` over an empty result set.
+     *
+     * @publicApi
+     */
     average(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
         return this.aggregate("average", avg, field, where, options);
     }
 
+    /**
+     * Returns the minimum value of `field` across all records matching `where`.
+     *
+     * Returns `null` over an empty result set.
+     *
+     * @publicApi
+     */
     min(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
         return this.aggregate("min", minFn, field, where, options);
     }
 
+    /**
+     * Returns the maximum value of `field` across all records matching `where`.
+     *
+     * Returns `null` over an empty result set.
+     *
+     * @publicApi
+     */
     max(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
         return this.aggregate("max", maxFn, field, where, options);
     }

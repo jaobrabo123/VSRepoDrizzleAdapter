@@ -4,6 +4,13 @@ import { SQLWrapper } from "drizzle-orm";
 type Fn = (...args: any[]) => any;
 
 /**
+ * Minimal duck-typed shape of a Drizzle database client (root instance).
+ *
+ * The adapter uses this type to accept any Drizzle client without coupling to a
+ * specific dialect driver. It covers the core query builders (`select`, `insert`,
+ * `update`, `delete`), the relational query API (`query`), raw SQL execution
+ * (`execute`), and transaction management (`transaction`).
+ *
  * @publicApi
  */
 export type DrizzleDbLike = {

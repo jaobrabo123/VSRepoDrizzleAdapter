@@ -18,6 +18,17 @@ export type ParsedColumns = { columns: PlainObject; with?: PlainObject };
  *    e.g. `{ name: true, posts: { title: true } }`) -> the relation field is
  *    moved into `with` (as `{ columns, with }`, recursively parsed the same
  *    way) instead of `columns`.
+ *  - A relation field marked as `true` (e.g. `{ posts: true }`) is only moved
+ *    to `with` when its key is present in `relationsKeysSet` (derived from the
+ *    constructor's `relations` config). Otherwise it's treated as a scalar
+ *    `columns` entry — which will make the query fail, since relation fields
+ *    aren't database columns.
+ *
+ * Note: the recursive call below does NOT forward `relationsKeysSet`, so a
+ * nested relation marked as `true` (a relation of a relation, without spelling
+ * out its own fields) is ALWAYS treated as a column. To load a nested relation,
+ * spell out at least one of its fields (e.g. `posts: { category: { id: true } }`),
+ * or use the `relations` option instead of `select`.
  */
 export function parseColumns<T>(select: VSRepoSelect<T>, relationsKeysSet?: Set<string>): ParsedColumns {
     const columns: PlainObject = {};
