@@ -495,20 +495,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     async deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
         try {
             return await this.runTransactional(options?.db, async tx => {
+                const readArg = await this.resolveReadArgs(where, options);
+                const toReturn = (await this.getQueryBuilder(tx).findMany(readArg)) as T[];
+
                 const condition = parseSqlWhere(where, this.getSqlWhereContext(tx));
+                await (tx as any).delete(this.table).where(condition);
 
-                const deleted = await tx
-                    .delete(this.table)
-                    .where(condition)
-                    .returning({ [this.pk]: (this.table as any)[this.pk] });
-
-                const readArg = await this.resolveReadArgs(
-                    { [this.pk]: { in: deleted.map((_: any) => _[this.pk]) } } as unknown as VSRepoWhere<T>,
-                    options,
-                );
-                const result = await this.getQueryBuilder(tx).findMany(readArg);
-
-                return result as T[];
+                return toReturn;
             });
         } catch (error) {
             throw mapDrizzleError(error, "deleteManyReturning", this.dialect);
