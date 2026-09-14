@@ -63,7 +63,7 @@ type UserMethodOptions = MethodOptions<User, MyOrmTypes>;
  * Assinaturas dos métodos registrados abaixo via `DynamicMethod()`/`QueryMethod()`
  * — ver NOTA no topo do arquivo sobre a aplicação imperativa dos decorators.
  */
-interface UserRepository {
+type UserRepositoryType = UserRepository & {
     /** Dynamic method: equivalente a `findOne({ email })`. */
     findOneByEmail(email: string, options?: UserMethodOptions): Promise<User | null>;
     /** Dynamic method: `findMany` com `name` filtrado por `contains`. */
@@ -74,7 +74,7 @@ interface UserRepository {
     findByEmailRaw(arg: QueryMethodArg<[email: string]>): Promise<{ id: string; name: string }[]>;
     /** Query method (`modifying: true`): UPDATE bruto, resolve pra linhas afetadas. */
     renameUserById(arg: QueryMethodArg<[name: string, id: string]>): Promise<number>;
-}
+};
 
 DynamicMethod()(UserRepository.prototype, "findOneByEmail");
 DynamicMethod()(UserRepository.prototype, "findByNameContains");
@@ -135,13 +135,13 @@ class AddressRepository extends VSRepository<Address, string, MyOrmTypes> {
 }
 
 describe("DrizzleAdapter usado através de uma VSRepository real (integração com Postgres)", () => {
-    let userRepository: UserRepository;
+    let userRepository: UserRepositoryType;
     let postRepository: PostRepository;
     let addressRepository: AddressRepository;
 
     beforeEach(async () => {
         await cleanDbHelper();
-        userRepository = new UserRepository();
+        userRepository = new UserRepository() as UserRepositoryType;
         postRepository = new PostRepository();
         addressRepository = new AddressRepository();
     });

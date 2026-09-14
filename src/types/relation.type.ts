@@ -19,6 +19,7 @@ export type AdapterRelation<T, K> = {
           mode: "mto";
           nullable?: boolean;
           fkHere: KeysOfType<T, Primitive>;
+          fkThere?: never;
       }
     | ({
           mode: "oto";

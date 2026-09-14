@@ -205,9 +205,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     /**
      * Strips relation fields from a payload — used by `createMany`/`updateMany`/
      * `updateManyReturning`, since batch statements only accept flat column
-     * data (no nested writes). Throws `VSRepoAdapterError` (code
-     * `NOT_SUPPORTED`) instead of silently dropping the field, when a
-     * configured relation field is present in the payload.
+     * data (no nested writes). Throws `VSRepoAdapterError` (code `NOT_SUPPORTED`).
      */
     private stripRelationFields(obj: PlainObject): PlainObject {
         if (!this.relations) return obj;
