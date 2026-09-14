@@ -104,7 +104,7 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
                         fkHere: "categoryId",
                         nullable: true,
                     },
-                } as any,
+                },
             }),
             pkName: "id",
             logLevel: VSLogLevel.ERROR,
@@ -126,7 +126,7 @@ class AddressRepository extends VSRepository<Address, string, MyOrmTypes> {
                 dialect: "postgresql",
                 relations: {
                     user: { mode: "oto", restriction: "set", table: userTable, fkHere: "userId" },
-                } as any,
+                },
             }),
             pkName: "id",
             logLevel: VSLogLevel.ERROR,
@@ -175,7 +175,7 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
             await createUser({ email: "b@example.com", name: "Bia" });
 
             const result = await userRepository.getAll({
-                order: { name: "ASC" } as any,
+                order: { name: "ASC" },
                 pagination: { offset: 0, limit: 2 },
             });
 
@@ -187,10 +187,10 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
                 email: "ana@example.com",
                 name: "Ana",
                 passwordHash: "x",
-            } as any);
+            });
             expect(created.id).toBeDefined();
 
-            const updated = await userRepository.save({ id: created.id, name: "Ana Paula" } as any);
+            const updated = await userRepository.save({ id: created.id, name: "Ana Paula" });
             expect(updated.name).toBe("Ana Paula");
             expect(await userRepository.total()).toBe(1);
         });
@@ -199,8 +199,8 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
             const existing = await createUser({ email: "existente@example.com", name: "Antigo" });
 
             const result = await userRepository.saveList([
-                { email: "novo@example.com", name: "Novo", passwordHash: "x" } as any,
-                { id: existing.id, name: "Atualizado" } as any,
+                { email: "novo@example.com", name: "Novo", passwordHash: "x" },
+                { id: existing.id, name: "Atualizado" },
             ]);
 
             expect(result).toHaveLength(2);
@@ -263,21 +263,21 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
                     name: "Ana",
                     passwordHash: "x",
                     address: { city: "Recife", state: "PE" },
-                } as any,
-                { relations: { address: true } as any },
+                },
+                { relations: { address: true } },
             );
 
-            expect((result as any).address.city).toBe("Recife");
+            expect(result.address?.city).toBe("Recife");
         });
 
         it("patch enviando 'address: null' apaga o Address (restriction 'set')", async () => {
             const user = await createUser({ email: "ana@example.com" });
             await createAddress(user.id);
 
-            await userRepository.patch(user.id, { address: null } as any);
+            await userRepository.patch(user.id, { address: null });
 
-            const found = await userRepository.get(user.id, { relations: { address: true } as any });
-            expect((found as any)?.address).toBeNull();
+            const found = await userRepository.get(user.id, { relations: { address: true } });
+            expect(found?.address).toBeNull();
         });
     });
 
@@ -288,14 +288,14 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
                     city: "Recife",
                     state: "PE",
                     user: { email: "ana@example.com", name: "Ana", passwordHash: "x" },
-                } as any,
-                { relations: { user: true } as any },
+                },
+                { relations: { user: true } },
             );
 
-            expect((result as any).user.email).toBe("ana@example.com");
+            expect(result.user.email).toBe("ana@example.com");
 
-            const found = await addressRepository.get(result.id, { relations: { user: true } as any });
-            expect((found as any)?.user?.id).toBe((result as any).user.id);
+            const found = await addressRepository.get(result.id, { relations: { user: true } });
+            expect(found?.user?.id).toBe(result.user.id);
         });
 
         it("patch conectando um User já existente (com pk) ATUALIZA seus dados, sem criar um segundo User", async () => {
@@ -304,12 +304,12 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
 
             const result = await addressRepository.patch(
                 address.id,
-                { user: { id: user.id, name: "Ana Paula" } } as any,
-                { relations: { user: true } as any },
+                { user: { id: user.id, name: "Ana Paula" } },
+                { relations: { user: true } },
             );
 
-            expect((result as any).user.id).toBe(user.id);
-            expect((result as any).user.name).toBe("Ana Paula");
+            expect(result.user.id).toBe(user.id);
+            expect(result.user.name).toBe("Ana Paula");
             expect(await userRepository.total()).toBe(1); // não duplicou o usuário
         });
 
@@ -317,7 +317,7 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
             const user = await createUser({ email: "ana@example.com" });
             const address = await createAddress(user.id, { city: "Recife", state: "PE" });
 
-            await expect(addressRepository.patch(address.id, { user: null } as any)).rejects.toThrow(
+            await expect(addressRepository.patch(address.id, { user: null as any })).rejects.toThrow(
                 VSRepoAdapterError,
             );
 
@@ -333,21 +333,21 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
                     name: "Ana",
                     passwordHash: "x",
                     posts: [{ title: "Post 1", content: "..." }],
-                } as any,
-                { relations: { posts: true } as any },
+                },
+                { relations: { posts: true } },
             );
 
-            expect((result as any).posts).toHaveLength(1);
+            expect(result.posts).toHaveLength(1);
         });
 
         it("patch com 'restriction: add' acumula Posts em vez de substituir", async () => {
             const user = await createUser({ email: "ana@example.com" });
             await createPost(user.id, { title: "Post existente" });
 
-            await userRepository.patch(user.id, { posts: [{ title: "Post novo", content: "..." }] } as any);
+            await userRepository.patch(user.id, { posts: [{ title: "Post novo", content: "..." }] });
 
-            const found = await userRepository.get(user.id, { relations: { posts: true } as any });
-            expect((found as any)?.posts.map((p: Post) => p.title).sort()).toEqual(["Post existente", "Post novo"]);
+            const found = await userRepository.get(user.id, { relations: { posts: true } });
+            expect(found?.posts.map((p: Post) => p.title).sort()).toEqual(["Post existente", "Post novo"]);
         });
     });
 
@@ -362,11 +362,11 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
                     content: "...",
                     userId: author.id,
                     category: { id: category.id, name: "Tutoriais" },
-                } as any,
-                { relations: { category: true } as any },
+                },
+                { relations: { category: true } },
             );
 
-            expect((result as any).category.name).toBe("Tutoriais");
+            expect(result.category?.name).toBe("Tutoriais");
         });
     });
 
@@ -422,10 +422,10 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
         it("confirma as escritas de ambos os repositórios quando o callback resolve", async () => {
             await userRepository.transaction(async tx => {
                 const user = await userRepository.save(
-                    { email: "ana@example.com", name: "Ana", passwordHash: "x" } as any,
+                    { email: "ana@example.com", name: "Ana", passwordHash: "x" },
                     { db: tx },
                 );
-                await postRepository.save({ title: "Post", content: "...", userId: user.id } as any, { db: tx });
+                await postRepository.save({ title: "Post", content: "...", userId: user.id }, { db: tx });
             });
 
             expect(await userRepository.total()).toBe(1);
@@ -436,10 +436,10 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
             await expect(
                 userRepository.transaction(async tx => {
                     const user = await userRepository.save(
-                        { email: "ana@example.com", name: "Ana", passwordHash: "x" } as any,
+                        { email: "ana@example.com", name: "Ana", passwordHash: "x" },
                         { db: tx },
                     );
-                    await postRepository.save({ title: "Post", content: "...", userId: user.id } as any, { db: tx });
+                    await postRepository.save({ title: "Post", content: "...", userId: user.id }, { db: tx });
 
                     throw new Error("falha proposital");
                 }),
@@ -453,19 +453,19 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
     describe("atômicos e agregados através da VSRepository (Post.views)", () => {
         it("increment soma 'value' ao campo, delegando pro adapter", async () => {
             const author = await createUser({ email: "autor@example.com" });
-            const post = await createPost(author.id, { views: 10 } as any);
+            const post = await createPost(author.id, { views: 10 });
 
-            const result = await postRepository.increment(post.id, "views" as any, 5 as any);
+            const result = await postRepository.increment(post.id, "views", 5);
 
-            expect((result as any).views).toBe(15);
+            expect(result.views).toBe(15);
         });
 
         it("sum calcula a soma sobre os registros que casam com o where", async () => {
             const author = await createUser({ email: "autor@example.com" });
-            await createPost(author.id, { views: 10 } as any);
-            await createPost(author.id, { views: 20 } as any);
+            await createPost(author.id, { views: 10 });
+            await createPost(author.id, { views: 20 });
 
-            expect(await postRepository.sum("views" as any, {})).toBe(30);
+            expect(await postRepository.sum("views", {})).toBe(30);
         });
     });
 
@@ -478,7 +478,7 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
             await createUser({ email: "duplicado@example.com" });
 
             await expect(
-                userRepository.save({ email: "duplicado@example.com", name: "X", passwordHash: "x" } as any),
+                userRepository.save({ email: "duplicado@example.com", name: "X", passwordHash: "x" }),
             ).rejects.toThrow(VSRepoAdapterError);
         });
     });

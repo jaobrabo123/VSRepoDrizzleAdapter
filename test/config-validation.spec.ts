@@ -3,6 +3,7 @@ import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import { createFakeDb } from "./helpers/fake-db.helper.js";
 import { addressTable, postTable, userTable } from "../dev/drizzle/schema.js";
+import { SupportedDialects } from "../src/index.js";
 
 describe("DrizzleAdapter — validação do client Drizzle", () => {
     it("should throw VSRepoAdapterError with code 'MISSING_DB_CLIENT' when db is undefined", () => {
@@ -26,10 +27,10 @@ describe("DrizzleAdapter — validação do client Drizzle", () => {
     });
 
     it("o erro de 'db.query' ausente também tem code 'MISSING_DB_CLIENT'", () => {
-        const fakeDb = { ...createFakeDb(), query: null as any };
+        const fakeDb = { ...createFakeDb(), query: null };
 
         try {
-            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "userTable" });
+            new DrizzleAdapter(fakeDb as any, { table: userTable, queryKey: "userTable" });
             throw new Error("deveria ter lançado VSRepoAdapterError");
         } catch (err: any) {
             expect(err).toBeInstanceOf(VSRepoAdapterError);
@@ -75,7 +76,11 @@ describe("DrizzleAdapter — validação da config do construtor", () => {
         const fakeDb = createFakeDb();
 
         expect(() => {
-            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "userTable", dialect: "mysql" as any });
+            new DrizzleAdapter(fakeDb, {
+                table: userTable,
+                queryKey: "userTable",
+                dialect: "mysql" as SupportedDialects,
+            });
         }).toThrow(VSRepoAdapterError);
     });
 
@@ -102,7 +107,7 @@ describe("DrizzleAdapter — validação da config do construtor", () => {
         const fakeDb = createFakeDb();
 
         expect(() => {
-            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "" as any });
+            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "" });
         }).toThrow(VSRepoAdapterError);
     });
 
@@ -110,7 +115,7 @@ describe("DrizzleAdapter — validação da config do construtor", () => {
         const fakeDb = createFakeDb(["userTable"]);
 
         try {
-            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "usreTable" as any });
+            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "usreTable" });
             throw new Error("deveria ter lançado VSRepoAdapterError");
         } catch (err) {
             expect(err).toBeInstanceOf(VSRepoAdapterError);
@@ -156,7 +161,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
             new DrizzleAdapter(makeDb(), {
                 table: userTable,
                 queryKey: "userTable",
-                relations: [] as any,
+                relations: [],
             });
         }).toThrow(VSRepoAdapterError);
     });
@@ -166,7 +171,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
             new DrizzleAdapter(makeDb(), {
                 table: userTable,
                 queryKey: "userTable",
-                relations: { address: "oto" } as any,
+                relations: { address: "oto" },
             });
         }).toThrow(VSRepoAdapterError);
     });
@@ -177,8 +182,8 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 table: userTable,
                 queryKey: "userTable",
                 relations: {
-                    address: { mode: "oto", restriction: "set", table: {} as any, fkThere: "userId" },
-                } as any,
+                    address: { mode: "oto", restriction: "set", table: {}, fkThere: "userId" },
+                },
             });
         }).toThrow(VSRepoAdapterError);
     });
@@ -190,7 +195,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 queryKey: "userTable",
                 relations: {
                     address: { mode: "one-to-one", restriction: "set", table: addressTable, fkThere: "userId" },
-                } as any,
+                },
             });
         }).toThrow(VSRepoAdapterError);
     });
@@ -202,7 +207,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 queryKey: "userTable",
                 relations: {
                     posts: { mode: "otm", restriction: "merge", table: postTable, fkThere: "userId" },
-                } as any,
+                },
             });
         }).toThrow(VSRepoAdapterError);
     });
@@ -220,7 +225,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                             table: postTable,
                             fkThere: "userId",
                             fkHere: "id",
-                        } as any,
+                        },
                     },
                 });
             }).toThrow(VSRepoAdapterError);
@@ -231,7 +236,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 new DrizzleAdapter(makeDb(), {
                     table: userTable,
                     queryKey: "userTable",
-                    relations: { posts: { mode: "otm", restriction: "add", table: postTable } as any },
+                    relations: { posts: { mode: "otm", restriction: "add", table: postTable } },
                 });
             }).toThrow(VSRepoAdapterError);
         });
@@ -242,7 +247,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                     table: userTable,
                     queryKey: "userTable",
                     relations: {
-                        posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "naoExiste" as any },
+                        posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "naoExiste" },
                     },
                 });
             }).toThrow(VSRepoAdapterError);
@@ -274,7 +279,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                             table: userTable,
                             fkHere: "userId",
                             fkThere: "id",
-                        } as any,
+                        },
                     },
                 });
             }).toThrow(VSRepoAdapterError);
@@ -285,7 +290,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 new DrizzleAdapter(makeDb(), {
                     table: postTable,
                     queryKey: "postTable",
-                    relations: { user: { mode: "mto", restriction: "set", table: userTable } as any },
+                    relations: { user: { mode: "mto", restriction: "set", table: userTable } },
                 });
             }).toThrow(VSRepoAdapterError);
         });
@@ -296,7 +301,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                     table: postTable,
                     queryKey: "postTable",
                     relations: {
-                        user: { mode: "mto", restriction: "set", table: userTable, fkHere: "naoExiste" as any },
+                        user: { mode: "mto", restriction: "set", table: userTable, fkHere: "naoExiste" },
                     },
                 });
             }).toThrow(VSRepoAdapterError);
@@ -313,7 +318,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                             restriction: "set",
                             table: userTable,
                             fkHere: "userId",
-                            nullable: "yes" as any,
+                            nullable: "yes",
                         },
                     },
                 });
@@ -346,7 +351,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                             table: addressTable,
                             fkHere: "addressId",
                             fkThere: "userId",
-                        } as any,
+                        },
                     },
                 });
             }).toThrow(VSRepoAdapterError);
@@ -357,7 +362,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 new DrizzleAdapter(makeDb(), {
                     table: userTable,
                     queryKey: "userTable",
-                    relations: { address: { mode: "oto", restriction: "set", table: addressTable } as any },
+                    relations: { address: { mode: "oto", restriction: "set", table: addressTable } },
                 });
             }).toThrow(VSRepoAdapterError);
         });
@@ -372,7 +377,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                             mode: "oto",
                             restriction: "set",
                             table: addressTable,
-                            fkThere: "naoExiste" as any,
+                            fkThere: "naoExiste",
                         },
                     },
                 });
@@ -389,7 +394,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                             mode: "oto",
                             restriction: "set",
                             table: addressTable,
-                            fkHere: "naoExiste" as any,
+                            fkHere: "naoExiste",
                         },
                     },
                 });
@@ -429,7 +434,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 table: userTable,
                 queryKey: "userTable",
                 relations: {
-                    address: { mode: "oto", restriction: "set", table: tableWithoutPk, fkThere: "name" } as any,
+                    address: { mode: "oto", restriction: "set", table: tableWithoutPk, fkThere: "name" },
                 },
             });
         }).toThrow(VSRepoAdapterError);
@@ -443,7 +448,7 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
                 table: userTable,
                 queryKey: "userTable",
                 relations: {
-                    address: { mode: "oto", restriction: "set", table: tableWithoutPk, fkThere: "name" } as any,
+                    address: { mode: "oto", restriction: "set", table: tableWithoutPk, fkThere: "name" },
                 },
             });
             throw new Error("deveria ter lançado VSRepoAdapterError");

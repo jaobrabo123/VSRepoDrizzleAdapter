@@ -62,7 +62,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
         it("findOne aplica operadores de where ('contains' + 'ignoreCase')", async () => {
             await createUser({ email: "ana@example.com", name: "Ana Paula" });
 
-            const result = await userAdapter.findOne({ name: { contains: "ANA PAULA", ignoreCase: true } } as any);
+            const result = await userAdapter.findOne({ name: { contains: "ANA PAULA", ignoreCase: true } });
 
             expect(result?.name).toBe("Ana Paula");
         });
@@ -70,7 +70,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
         it("findOne usa 'select' quando informado, retornando só os campos pedidos", async () => {
             const user = await createUser({ email: "ana@example.com", name: "Ana" });
 
-            const result = await userAdapter.findOne({ id: user.id }, { select: { id: true, name: true } as any });
+            const result = await userAdapter.findOne({ id: user.id }, { select: { id: true, name: true } });
 
             expect(result).toEqual({ id: user.id, name: "Ana" });
         });
@@ -80,7 +80,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             await createPost(user.id, { title: "Post 1" });
             await createPost(user.id, { title: "Post 2" });
 
-            const result = await userAdapter.findOne({ id: user.id }, { relations: { posts: true } as any });
+            const result = await userAdapter.findOne({ id: user.id }, { relations: { posts: true } });
 
             expect(result?.posts).toHaveLength(2);
             expect(result?.posts.map((p: Post) => p.title).sort()).toEqual(["Post 1", "Post 2"]);
@@ -220,7 +220,13 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                 queryKey: "userTable",
                 table: userTable,
                 relations: {
-                    address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId", nullable: true },
+                    address: {
+                        mode: "oto",
+                        restriction: "set",
+                        table: addressTable,
+                        fkThere: "userId",
+                        nullable: true,
+                    },
                 },
             });
         });
@@ -246,7 +252,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             const user = await createUser({ email: "ana@example.com" });
             await createAddress(user.id);
 
-            await userAdapter.update({ id: user.id }, { address: null } as any);
+            await userAdapter.update({ id: user.id }, { address: null });
 
             const rows = await db.select().from(addressTable);
             expect(rows).toHaveLength(0);
@@ -263,7 +269,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             const user = await createUser({ email: "ana@example.com" });
             await createAddress(user.id);
 
-            await expect(naoNullableAdapter.update({ id: user.id }, { address: null } as any)).rejects.toThrow(
+            await expect(naoNullableAdapter.update({ id: user.id }, { address: null })).rejects.toThrow(
                 VSRepoAdapterError,
             );
 
@@ -277,12 +283,12 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
             const result = await userAdapter.update(
                 { id: user.id },
-                { address: { city: "Salvador", state: "BA" } } as any,
+                { address: { city: "Salvador", state: "BA" } },
                 { relations: { address: true } },
             );
 
-            expect((result as any).address.id).toBe(address.id);
-            expect((result as any).address.city).toBe("Salvador");
+            expect(result.address?.id).toBe(address.id);
+            expect(result.address?.city).toBe("Salvador");
 
             const rows = await db.select().from(addressTable);
             expect(rows).toHaveLength(1); // não duplicou
@@ -293,9 +299,12 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             const user = await createUser({ email: "ana@example.com" });
             const address = await createAddress(user.id, { city: "Recife" });
 
-            await userAdapter.update({ id: user.id }, {
-                address: { id: address.id, city: "Salvador", state: "BA" },
-            } as any);
+            await userAdapter.update(
+                { id: user.id },
+                {
+                    address: { id: address.id, city: "Salvador", state: "BA" },
+                },
+            );
 
             const rows = await db.select().from(addressTable);
             expect(rows).toHaveLength(1);
@@ -309,11 +318,11 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                     name: "Ana",
                     passwordHash: "x",
                     address: { city: "Recife", state: "PE" },
-                } as any,
-                { relations: { address: true } as any },
+                },
+                { relations: { address: true } },
             );
 
-            expect((result as any).address.city).toBe("Recife");
+            expect(result.address?.city).toBe("Recife");
         });
     });
 
@@ -396,11 +405,11 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
             const result = await addressAdapter.update(
                 { id: address.id },
-                { user: { id: user.id, name: "Ana Paula" } } as any,
+                { user: { id: user.id, name: "Ana Paula" } },
                 { relations: { user: true } },
             );
 
-            expect((result as any).user.name).toBe("Ana Paula");
+            expect(result.user.name).toBe("Ana Paula");
 
             const allUsers = await db.select().from(userTable);
             expect(allUsers).toHaveLength(1); // não duplicou o User
@@ -408,17 +417,17 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
         it("upsert cria o Address com o User aninhado (fkHere) quando não encontra nada", async () => {
             const created = await addressAdapter.upsert(
-                { city: "Recife" } as any,
+                { city: "Recife" },
                 {
                     city: "Recife",
                     state: "PE",
                     user: { email: "ana@example.com", name: "Ana", passwordHash: "x" },
-                } as any,
-                { city: "Recife Atualizado" } as any,
-                { relations: { user: true } as any },
+                },
+                { city: "Recife Atualizado" },
+                { relations: { user: true } },
             );
 
-            expect((created as any).user.email).toBe("ana@example.com");
+            expect(created.user.email).toBe("ana@example.com");
 
             const allUsers = await db.select().from(userTable);
             expect(allUsers).toHaveLength(1);
@@ -432,7 +441,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                 table: userTable,
                 relations: {
                     posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
-                } as any,
+                },
             });
         });
 
@@ -446,11 +455,11 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                         { title: "Post 1", content: "..." },
                         { title: "Post 2", content: "..." },
                     ],
-                } as any,
-                { relations: { posts: true } as any },
+                },
+                { relations: { posts: true } },
             );
 
-            expect((result as any).posts).toHaveLength(2);
+            expect(result.posts).toHaveLength(2);
 
             const posts = await db.select().from(postTable);
             expect(posts.every(p => p.userId === result.id)).toBe(true);
@@ -460,7 +469,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             const user = await createUser({ email: "ana@example.com" });
             await createPost(user.id, { title: "Post existente" });
 
-            await userAdapter.update({ id: user.id }, { posts: [{ title: "Post novo", content: "..." }] } as any);
+            await userAdapter.update({ id: user.id }, { posts: [{ title: "Post novo", content: "..." }] });
 
             const posts = await db.select().from(postTable).where(eq(postTable.userId, user.id));
             expect(posts.map(p => p.title).sort()).toEqual(["Post existente", "Post novo"]);
@@ -471,7 +480,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             const otherUser = await createUser({ email: "outro@example.com" });
             const post = await createPost(otherUser.id, { title: "Post de outro" });
 
-            await userAdapter.update({ id: user.id }, { posts: [{ id: post.id, title: "Post de outro" }] } as any);
+            await userAdapter.update({ id: user.id }, { posts: [{ id: post.id, title: "Post de outro" }] });
 
             const [stored] = await db.select().from(postTable).where(eq(postTable.id, post.id));
             expect(stored?.userId).toBe(user.id);
@@ -482,9 +491,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
         it("createMany lança 'VSRepoAdapterError' (code 'NOT_SUPPORTED') se um objeto trouxer o campo de relação", async () => {
             await expect(
-                userAdapter.createMany([
-                    { email: "ana@example.com", name: "Ana", passwordHash: "x", posts: [] } as any,
-                ]),
+                userAdapter.createMany([{ email: "ana@example.com", name: "Ana", passwordHash: "x", posts: [] }]),
             ).rejects.toThrow(VSRepoAdapterError);
 
             expect(await userAdapter.count({})).toBe(0);
@@ -507,7 +514,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                         fkHere: "categoryId",
                         nullable: true,
                     },
-                } as any,
+                },
             });
             author = await createUser({ email: "autor@example.com" });
         });
@@ -521,18 +528,18 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                     content: "...",
                     userId: author.id,
                     category: { id: category.id, name: "Tutoriais" },
-                } as any,
-                { relations: { category: true } as any },
+                },
+                { relations: { category: true } },
             );
 
-            expect((result as any).category.name).toBe("Tutoriais");
+            expect(result.category?.name).toBe("Tutoriais");
         });
 
         it("update enviando 'category: null' desconecta (categoryId nullable)", async () => {
             const category = await createCategory({ name: "Tutoriais" });
             const post = await createPost(author.id, { categoryId: category.id });
 
-            await postAdapter.update({ id: post.id }, { category: null } as any);
+            await postAdapter.update({ id: post.id }, { category: null });
 
             const [stored] = await db.select().from(postTable).where(eq(postTable.id, post.id));
             expect(stored?.categoryId).toBeNull();
@@ -558,20 +565,26 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             await createUser({ email: "b@example.com" });
             await createUser({ email: "c@example.com" });
 
-            const result = await userAdapter.deleteMany({ email: { contains: "a" } } as any);
+            const result = await userAdapter.deleteMany({ email: { contains: "a" } });
 
             expect(result.count).toBeGreaterThan(0);
             expect(await userAdapter.count({})).toBe(3 - result.count);
         });
 
-        it("deleteManyReturning apaga e devolve os registros apagados", async () => {
-            await createUser({ email: "a@example.com" });
-            await createUser({ email: "b@example.com" });
+        it("deleteManyReturning apaga e devolve os registros apagados (com os dados, não só o pk)", async () => {
+            await createUser({ email: "a@example.com", name: "Ana" });
+            await createUser({ email: "b@example.com", name: "Bia" });
 
             const result = await userAdapter.deleteManyReturning({});
 
             expect(result).toHaveLength(2);
+            expect(result.map(u => u.name).sort()).toEqual(["Ana", "Bia"]);
             expect(await userAdapter.count({})).toBe(0);
+        });
+
+        it("deleteManyReturning retorna '[]' (sem erro) quando nada casa com o where", async () => {
+            const result = await userAdapter.deleteManyReturning({ email: "inexistente@example.com" });
+            expect(result).toEqual([]);
         });
     });
 
@@ -597,15 +610,25 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             expect(result.every(u => u.role === Role.ADMIN)).toBe(true);
         });
 
+        it("updateManyReturning retorna '[]' (sem erro) quando nada casa com o where", async () => {
+            const result = await userAdapter.updateManyReturning(
+                { email: "inexistente@example.com" },
+                {
+                    role: Role.ADMIN,
+                },
+            );
+            expect(result).toEqual([]);
+        });
+
         it("updateMany/updateManyReturning lançam 'NOT_SUPPORTED' se o payload trouxer um campo de relação configurada", async () => {
             userAdapter = new DrizzleAdapter<User>(db, {
                 queryKey: "userTable",
                 table: userTable,
-                relations: { posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" } } as any,
+                relations: { posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" } },
             });
 
-            await expect(userAdapter.updateMany({}, { posts: [] } as any)).rejects.toThrow(VSRepoAdapterError);
-            await expect(userAdapter.updateManyReturning({}, { posts: [] } as any)).rejects.toThrow(VSRepoAdapterError);
+            await expect(userAdapter.updateMany({}, { posts: [] })).rejects.toThrow(VSRepoAdapterError);
+            await expect(userAdapter.updateManyReturning({}, { posts: [] })).rejects.toThrow(VSRepoAdapterError);
         });
     });
 
@@ -614,8 +637,8 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             const existing = await createUser({ email: "existente@example.com", name: "Antigo" });
 
             const result = await userAdapter.saveMany([
-                { email: "novo@example.com", name: "Novo", passwordHash: "x" } as any,
-                { id: existing.id, name: "Atualizado" } as any,
+                { email: "novo@example.com", name: "Novo", passwordHash: "x" },
+                { id: existing.id, name: "Atualizado" },
             ]);
 
             expect(result).toHaveLength(2);
@@ -627,8 +650,8 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
             await expect(
                 userAdapter.saveMany([
-                    { email: "novo@example.com", name: "Novo", passwordHash: "x" } as any,
-                    { email: "duplicado@example.com", name: "Vai falhar", passwordHash: "x" } as any,
+                    { email: "novo@example.com", name: "Novo", passwordHash: "x" },
+                    { email: "duplicado@example.com", name: "Vai falhar", passwordHash: "x" },
                 ]),
             ).rejects.toThrow(VSRepoAdapterError);
 
@@ -658,8 +681,8 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
     describe("createMany / createManyReturning", () => {
         it("createMany cria vários registros de uma vez e retorna o count", async () => {
             const result = await userAdapter.createMany([
-                { email: "a@example.com", name: "A", passwordHash: "x" } as any,
-                { email: "b@example.com", name: "B", passwordHash: "x" } as any,
+                { email: "a@example.com", name: "A", passwordHash: "x" },
+                { email: "b@example.com", name: "B", passwordHash: "x" },
             ]);
 
             expect(result.count).toBe(2);
@@ -670,8 +693,8 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
             const result = await userAdapter.createMany(
                 [
-                    { email: "a@example.com", name: "Duplicado", passwordHash: "x" } as any,
-                    { email: "b@example.com", name: "B", passwordHash: "x" } as any,
+                    { email: "a@example.com", name: "Duplicado", passwordHash: "x" },
+                    { email: "b@example.com", name: "B", passwordHash: "x" },
                 ],
                 { ignoreConflicts: true },
             );
@@ -682,12 +705,129 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
         it("createManyReturning cria vários registros de uma vez e devolve os criados", async () => {
             const result = await userAdapter.createManyReturning([
-                { email: "a@example.com", name: "A", passwordHash: "x" } as any,
-                { email: "b@example.com", name: "B", passwordHash: "x" } as any,
+                { email: "a@example.com", name: "A", passwordHash: "x" },
+                { email: "b@example.com", name: "B", passwordHash: "x" },
             ]);
 
             expect(result).toHaveLength(2);
             expect(result.map(u => u.email).sort()).toEqual(["a@example.com", "b@example.com"]);
+        });
+
+        it("'ignoreConflicts: true' em createManyReturning devolve só os registros efetivamente criados", async () => {
+            await createUser({ email: "a@example.com" });
+
+            const result = await userAdapter.createManyReturning(
+                [
+                    { email: "a@example.com", name: "Duplicado", passwordHash: "x" },
+                    { email: "b@example.com", name: "B", passwordHash: "x" },
+                ],
+                { ignoreConflicts: true },
+            );
+
+            expect(result.map(u => u.email)).toEqual(["b@example.com"]);
+            expect(await userAdapter.count({})).toBe(2);
+        });
+    });
+
+    describe("métodos *Returning aplicam 'select'/'relations' das options (readArgs)", () => {
+        let returningAdapter: DrizzleAdapter<User>;
+
+        beforeEach(() => {
+            returningAdapter = new DrizzleAdapter<User>(db, {
+                queryKey: "userTable",
+                table: userTable,
+                relations: {
+                    address: {
+                        mode: "oto",
+                        restriction: "set",
+                        table: addressTable,
+                        fkThere: "userId",
+                        nullable: true,
+                    },
+                    posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
+                },
+            });
+        });
+
+        it("createManyReturning aplica 'select', retornando só os campos pedidos", async () => {
+            const result = await returningAdapter.createManyReturning(
+                [
+                    { email: "a@example.com", name: "A", passwordHash: "x" },
+                    { email: "b@example.com", name: "B", passwordHash: "x" },
+                ],
+                { select: { id: true, email: true } },
+            );
+
+            expect(result).toHaveLength(2);
+            expect(Object.keys(result[0]!).sort()).toEqual(["email", "id"]);
+        });
+
+        it("createManyReturning aplica 'relations' (eager load), mesmo sem nada aninhado no payload de criação", async () => {
+            const result = await returningAdapter.createManyReturning(
+                [{ email: "a@example.com", name: "A", passwordHash: "x" }],
+                { relations: { posts: true } },
+            );
+
+            expect(result[0]!.posts).toEqual([]);
+        });
+
+        it("deleteManyReturning aplica 'select', retornando só os campos pedidos", async () => {
+            await createUser({ email: "a@example.com", name: "Ana" });
+
+            const result = await returningAdapter.deleteManyReturning({}, { select: { id: true, name: true } });
+
+            expect(result).toHaveLength(1);
+            expect(Object.keys(result[0]!).sort()).toEqual(["id", "name"]);
+        });
+
+        it("deleteManyReturning aplica 'relations' no retorno, e apaga os relacionados junto (cascade)", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            const address = await createAddress(user.id, { city: "Recife", state: "PE" });
+
+            const result = await returningAdapter.deleteManyReturning(
+                { id: user.id },
+                {
+                    relations: { address: true },
+                },
+            );
+
+            expect(result).toHaveLength(1);
+            expect(result[0]!.address?.id).toBe(address.id);
+            expect(result[0]!.address?.city).toBe("Recife");
+
+            const remainingAddresses = await db.select().from(addressTable);
+            expect(remainingAddresses).toHaveLength(0); // apagado via 'onDelete: cascade' junto com o User
+        });
+
+        it("updateManyReturning aplica 'select', retornando só os campos pedidos", async () => {
+            await createUser({ email: "a@example.com", role: Role.USER });
+            await createUser({ email: "b@example.com", role: Role.USER });
+
+            const result = await returningAdapter.updateManyReturning(
+                {},
+                { role: Role.ADMIN },
+                { select: { id: true, role: true } },
+            );
+
+            expect(result).toHaveLength(2);
+            expect(Object.keys(result[0]!).sort()).toEqual(["id", "role"]);
+            expect(result.every(u => u.role === Role.ADMIN)).toBe(true);
+        });
+
+        it("updateManyReturning aplica 'relations' no retorno", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            await createAddress(user.id, { city: "Recife", state: "PE" });
+
+            const result = await returningAdapter.updateManyReturning(
+                { id: user.id },
+                { role: Role.ADMIN },
+                {
+                    relations: { address: true },
+                },
+            );
+
+            expect(result).toHaveLength(1);
+            expect(result[0]!.address?.city).toBe("Recife");
         });
     });
 
@@ -727,41 +867,41 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
         });
 
         it("incrementOne soma 'value' ao campo e retorna o registro já atualizado", async () => {
-            const post = await createPost(author.id, { views: 10 } as any);
+            const post = await createPost(author.id, { views: 10 });
 
-            const result = await postAdapter.incrementOne("views" as any, 5 as any, { id: post.id });
+            const result = await postAdapter.incrementOne("views", 5, { id: post.id });
 
-            expect((result as any).views).toBe(15);
+            expect(result.views).toBe(15);
         });
 
         it("decrementOne subtrai 'value' do campo", async () => {
-            const post = await createPost(author.id, { views: 10 } as any);
+            const post = await createPost(author.id, { views: 10 });
 
-            const result = await postAdapter.decrementOne("views" as any, 3 as any, { id: post.id });
+            const result = await postAdapter.decrementOne("views", 3, { id: post.id });
 
-            expect((result as any).views).toBe(7);
+            expect(result.views).toBe(7);
         });
 
         it("multiplyOne multiplica o campo por 'value'", async () => {
-            const post = await createPost(author.id, { views: 4 } as any);
+            const post = await createPost(author.id, { views: 4 });
 
-            const result = await postAdapter.multiplyOne("views" as any, 3 as any, { id: post.id });
+            const result = await postAdapter.multiplyOne("views", 3, { id: post.id });
 
-            expect((result as any).views).toBe(12);
+            expect(result.views).toBe(12);
         });
 
         it("divideOne divide o campo por 'value'", async () => {
-            const post = await createPost(author.id, { views: 20 } as any);
+            const post = await createPost(author.id, { views: 20 });
 
-            const result = await postAdapter.divideOne("views" as any, 4 as any, { id: post.id });
+            const result = await postAdapter.divideOne("views", 4, { id: post.id });
 
-            expect((result as any).views).toBe(5);
+            expect(result.views).toBe(5);
         });
 
         it("incrementOne lança 'VSRepoAdapterError' (code 'NOT_FOUND') quando nada casa com o where", async () => {
-            await expect(
-                postAdapter.incrementOne("views" as any, 1 as any, { id: crypto.randomUUID() }),
-            ).rejects.toThrow(VSRepoAdapterError);
+            await expect(postAdapter.incrementOne("views", 1, { id: crypto.randomUUID() })).rejects.toThrow(
+                VSRepoAdapterError,
+            );
         });
     });
 
@@ -775,19 +915,19 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
         });
 
         it("sum retorna 'null' (não '0') quando nenhum registro casa com o where", async () => {
-            const result = await postAdapter.sum("views" as any, { title: "não existe" });
+            const result = await postAdapter.sum("views", { title: "não existe" });
             expect(result).toBeNull();
         });
 
         it("sum/average/min/max calculam corretamente sobre os registros que casam com o where", async () => {
-            await createPost(author.id, { views: 10 } as any);
-            await createPost(author.id, { views: 20 } as any);
-            await createPost(author.id, { views: 30 } as any);
+            await createPost(author.id, { views: 10 });
+            await createPost(author.id, { views: 20 });
+            await createPost(author.id, { views: 30 });
 
-            expect(await postAdapter.sum("views" as any, {})).toBe(60);
-            expect(await postAdapter.average("views" as any, {})).toBe(20);
-            expect(await postAdapter.min("views" as any, {})).toBe(10);
-            expect(await postAdapter.max("views" as any, {})).toBe(30);
+            expect(await postAdapter.sum("views", {})).toBe(60);
+            expect(await postAdapter.average("views", {})).toBe(20);
+            expect(await postAdapter.min("views", {})).toBe(10);
+            expect(await postAdapter.max("views", {})).toBe(30);
         });
     });
 
@@ -798,9 +938,12 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
         it("runInTransaction confirma as escritas quando o callback resolve", async () => {
             await userAdapter.runInTransaction(async tx => {
-                await userAdapter.create({ email: "ana@example.com", name: "Ana", passwordHash: "x" } as any, {
-                    db: tx,
-                });
+                await userAdapter.create(
+                    { email: "ana@example.com", name: "Ana", passwordHash: "x" },
+                    {
+                        db: tx,
+                    },
+                );
             });
 
             expect(await userAdapter.count({})).toBe(1);
@@ -809,9 +952,12 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
         it("runInTransaction desfaz as escritas quando o callback rejeita", async () => {
             await expect(
                 userAdapter.runInTransaction(async tx => {
-                    await userAdapter.create({ email: "ana@example.com", name: "Ana", passwordHash: "x" } as any, {
-                        db: tx,
-                    });
+                    await userAdapter.create(
+                        { email: "ana@example.com", name: "Ana", passwordHash: "x" },
+                        {
+                            db: tx,
+                        },
+                    );
                     throw new Error("falha proposital");
                 }),
             ).rejects.toThrow();
@@ -823,8 +969,8 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             await userAdapter.runInTransaction(async tx => {
                 await userAdapter.saveMany(
                     [
-                        { email: "a@example.com", name: "A", passwordHash: "x" } as any,
-                        { email: "b@example.com", name: "B", passwordHash: "x" } as any,
+                        { email: "a@example.com", name: "A", passwordHash: "x" },
+                        { email: "b@example.com", name: "B", passwordHash: "x" },
                     ],
                     { db: tx },
                 );
