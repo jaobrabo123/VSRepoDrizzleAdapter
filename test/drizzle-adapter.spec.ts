@@ -220,7 +220,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
                 queryKey: "userTable",
                 table: userTable,
                 relations: {
-                    address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId" },
+                    address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId", nullable: true },
                 },
             });
         });
@@ -242,7 +242,7 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             expect(stored).toBeDefined();
         });
 
-        it("update enviando o Address como 'null' apaga o Address (restriction 'set')", async () => {
+        it("update enviando o Address como 'null' apaga o Address (restriction 'set', relação nullable)", async () => {
             const user = await createUser({ email: "ana@example.com" });
             await createAddress(user.id);
 
@@ -250,6 +250,43 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
             const rows = await db.select().from(addressTable);
             expect(rows).toHaveLength(0);
+        });
+
+        it("update enviando 'address: null' quando a relação NÃO é nullable lança erro (não apaga nada)", async () => {
+            const naoNullableAdapter = new DrizzleAdapter<User>(db, {
+                queryKey: "userTable",
+                table: userTable,
+                relations: {
+                    address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId" },
+                },
+            });
+            const user = await createUser({ email: "ana@example.com" });
+            await createAddress(user.id);
+
+            await expect(naoNullableAdapter.update({ id: user.id }, { address: null } as any)).rejects.toThrow(
+                VSRepoAdapterError,
+            );
+
+            const rows = await db.select().from(addressTable);
+            expect(rows).toHaveLength(1); // nada foi apagado
+        });
+
+        it("update com Address aninhado SEM pk, quando o User já tem um Address vinculado, ATUALIZA o existente (não duplica nem some o vínculo)", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            const address = await createAddress(user.id, { city: "Recife", state: "PE" });
+
+            const result = await userAdapter.update(
+                { id: user.id },
+                { address: { city: "Salvador", state: "BA" } } as any,
+                { relations: { address: true } },
+            );
+
+            expect((result as any).address.id).toBe(address.id);
+            expect((result as any).address.city).toBe("Salvador");
+
+            const rows = await db.select().from(addressTable);
+            expect(rows).toHaveLength(1); // não duplicou
+            expect(rows[0]?.city).toBe("Salvador");
         });
 
         it("update de um Address existente (com pk) faz upsert do Address aninhado, sem duplicar", async () => {
@@ -353,36 +390,38 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             expect(allAddresses).toHaveLength(1);
         });
 
-        it("update de um Address existente (com pk) faz upsert do Address aninhado e mantém 'addressId'", async () => {
-            const user = await createUser({ email: "ana@example.com" });
+        it("update conectando um User já existente (com pk) ATUALIZA seus dados, sem duplicar (restriction 'set')", async () => {
+            const user = await createUser({ email: "ana@example.com", name: "Ana" });
             const address = await createAddress(user.id, { city: "Recife", state: "PE" });
 
-            const result = await userAdapter.update(
-                { id: user.id },
-                { primaryAddress: { id: address.id, city: "Salvador", state: "BA" } } as any,
-                { relations: { primaryAddress: true } as any },
+            const result = await addressAdapter.update(
+                { id: address.id },
+                { user: { id: user.id, name: "Ana Paula" } } as any,
+                { relations: { user: true } },
             );
 
-            expect((result as any).primaryAddress.city).toBe("Salvador");
+            expect((result as any).user.name).toBe("Ana Paula");
 
-            const allAddresses = await db.select().from(addressTable);
-            expect(allAddresses).toHaveLength(1); // não duplicou o Address
+            const allUsers = await db.select().from(userTable);
+            expect(allUsers).toHaveLength(1); // não duplicou o User
         });
 
-        it("upsert cria o User com o Address aninhado (fkHere) quando não encontra nada", async () => {
-            const created = await userAdapter.upsert(
-                { email: "ana@example.com" },
+        it("upsert cria o Address com o User aninhado (fkHere) quando não encontra nada", async () => {
+            const created = await addressAdapter.upsert(
+                { city: "Recife" } as any,
                 {
-                    email: "ana@example.com",
-                    name: "Ana",
-                    passwordHash: "x",
-                    primaryAddress: { city: "Recife", state: "PE" },
+                    city: "Recife",
+                    state: "PE",
+                    user: { email: "ana@example.com", name: "Ana", passwordHash: "x" },
                 } as any,
-                { name: "Ana Atualizada" },
-                { relations: { primaryAddress: true } as any },
+                { city: "Recife Atualizado" } as any,
+                { relations: { user: true } as any },
             );
 
-            expect((created as any).primaryAddress.city).toBe("Recife");
+            expect((created as any).user.email).toBe("ana@example.com");
+
+            const allUsers = await db.select().from(userTable);
+            expect(allUsers).toHaveLength(1);
         });
     });
 

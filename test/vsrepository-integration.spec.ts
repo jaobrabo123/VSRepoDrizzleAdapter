@@ -24,7 +24,7 @@ import { DrizzleOrmTypes } from "../src/types/drizzle-orm-types.type.js";
 import cleanDbHelper from "./helpers/clean-db.helper.js";
 import { createAddress, createCategory, createPost, createUser } from "./helpers/fixtures.js";
 import { db } from "../dev/drizzle/db.js";
-import { Post, User } from "../dev/entities.js";
+import { Address, Post, User } from "../dev/entities.js";
 import { addressTable, categoryTable, postTable, userTable } from "../dev/drizzle/schema.js";
 
 type MyOrmTypes = DrizzleOrmTypes<typeof db>;
@@ -41,7 +41,13 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                 table: userTable,
                 dialect: "postgresql",
                 relations: {
-                    address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId" },
+                    address: {
+                        mode: "oto",
+                        restriction: "set",
+                        table: addressTable,
+                        fkThere: "userId",
+                        nullable: true,
+                    },
                     posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
                 },
             }),
@@ -106,14 +112,38 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
     }
 }
 
+/**
+ * Repositório concreto de `Address`, configurado com `user` (oto, FK em
+ * `Address.userId` — fkHere, e não-nullable, já que a coluna é `NOT NULL`)
+ * — complementa o `oto`/`fkThere` já coberto pelo `UserRepository` acima.
+ */
+class AddressRepository extends VSRepository<Address, string, MyOrmTypes> {
+    constructor() {
+        super({
+            adapter: new DrizzleAdapter<Address>(db, {
+                queryKey: "addressTable",
+                table: addressTable,
+                dialect: "postgresql",
+                relations: {
+                    user: { mode: "oto", restriction: "set", table: userTable, fkHere: "userId" },
+                } as any,
+            }),
+            pkName: "id",
+            logLevel: VSLogLevel.ERROR,
+        });
+    }
+}
+
 describe("DrizzleAdapter usado através de uma VSRepository real (integração com Postgres)", () => {
     let userRepository: UserRepository;
     let postRepository: PostRepository;
+    let addressRepository: AddressRepository;
 
     beforeEach(async () => {
         await cleanDbHelper();
         userRepository = new UserRepository();
         postRepository = new PostRepository();
+        addressRepository = new AddressRepository();
     });
 
     describe("CRUD básico via VSRepository (get/save/patch/remove/...)", () => {
@@ -251,50 +281,47 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
         });
     });
 
-    describe("relação 'oto' com 'fkHere' (primaryAddress) através da VSRepository", () => {
-        it("save com 'primaryAddress' aninhado (sem pk) cria o Address e vincula via 'addressId'", async () => {
-            const result = await userRepository.save(
+    describe("relação 'oto' com 'fkHere' (user) através da VSRepository (AddressRepository)", () => {
+        it("save com 'user' aninhado (sem pk) cria o User ANTES do Address e vincula via 'userId'", async () => {
+            const result = await addressRepository.save(
                 {
-                    email: "ana@example.com",
-                    name: "Ana",
-                    passwordHash: "x",
-                    primaryAddress: { city: "Recife", state: "PE" },
+                    city: "Recife",
+                    state: "PE",
+                    user: { email: "ana@example.com", name: "Ana", passwordHash: "x" },
                 } as any,
-                { relations: { primaryAddress: true } as any },
+                { relations: { user: true } as any },
             );
 
-            expect((result as any).primaryAddress.city).toBe("Recife");
+            expect((result as any).user.email).toBe("ana@example.com");
 
-            const found = await userRepository.get(result.id, { relations: { primaryAddress: true } as any });
-            expect((found as any)?.primaryAddress?.id).toBe((result as any).primaryAddress.id);
+            const found = await addressRepository.get(result.id, { relations: { user: true } as any });
+            expect((found as any)?.user?.id).toBe((result as any).user.id);
         });
 
-        it("patch conectando um Address já existente (com pk) não cria um segundo Address", async () => {
-            const owner = await createUser({ email: "dono-original@example.com" });
-            const address = await createAddress(owner.id, { city: "Recife", state: "PE" });
-            const user = await createUser({ email: "ana@example.com" });
+        it("patch conectando um User já existente (com pk) ATUALIZA seus dados, sem criar um segundo User", async () => {
+            const user = await createUser({ email: "ana@example.com", name: "Ana" });
+            const address = await createAddress(user.id, { city: "Recife", state: "PE" });
 
-            const result = await userRepository.patch(
-                user.id,
-                { primaryAddress: { id: address.id, city: "Recife", state: "PE" } } as any,
-                { relations: { primaryAddress: true } as any },
+            const result = await addressRepository.patch(
+                address.id,
+                { user: { id: user.id, name: "Ana Paula" } } as any,
+                { relations: { user: true } as any },
             );
 
-            expect((result as any).primaryAddress.id).toBe(address.id);
+            expect((result as any).user.id).toBe(user.id);
+            expect((result as any).user.name).toBe("Ana Paula");
+            expect(await userRepository.total()).toBe(1); // não duplicou o usuário
         });
 
-        it("patch enviando 'primaryAddress: null' apaga o Address vinculado (restriction 'set')", async () => {
+        it("patch enviando 'user: null' lança erro, pois a relação não é nullable ('Address.userId' é NOT NULL)", async () => {
             const user = await createUser({ email: "ana@example.com" });
             const address = await createAddress(user.id, { city: "Recife", state: "PE" });
-            await userRepository.patch(user.id, {
-                primaryAddress: { id: address.id, city: "Recife", state: "PE" },
-            } as any);
 
-            await userRepository.patch(user.id, { primaryAddress: null } as any);
+            await expect(addressRepository.patch(address.id, { user: null } as any)).rejects.toThrow(
+                VSRepoAdapterError,
+            );
 
-            const found = await userRepository.get(user.id, { relations: { primaryAddress: true } as any });
-            expect((found as any)?.primaryAddress).toBeNull();
-            expect(await postRepository.total()).toBe(0); // sanity: nada de Post foi afetado por engano
+            expect(await userRepository.total()).toBe(1); // nada foi apagado
         });
     });
 
