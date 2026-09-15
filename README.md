@@ -247,7 +247,7 @@ Unlike the Prisma adapter (which uses a `pk` field to identify related records v
 
 - **`fkHere`** — the foreign key column **on this table** that points to the related table. Used for `mto` and `oto` (when the FK lives on the owning side). The adapter reads/writes this column to link/unlink the relation.
 - **`fkThere`** — the foreign key column **on the related table** that points back to this table. Used for `otm` and `oto` (when the FK lives on the related side). The adapter sets this column on the related rows to link them.
-- **`nullable`** — relevant for `oto`/`mto` to-one relations. When `true`, sending `null` for the field resolves to setting the FK to `null` (for `fkHere`) or deleting the related row (for `fkThere` with `restriction: "set"`). When omitted/`false`, sending `null` for a to-one relation throws a `VSRepoAdapterError` (code `INVALID_DATA`).
+- **`nullable`** — relevant for `oto`/`mto` to-one relations. When `true`, sending `null` for the field resolves to setting the FK to `null` or deleting the related row (for `oto` with `restriction: "set"`). When omitted/`false`, sending `null` for a to-one relation throws a `VSRepoAdapterError` (code `INVALID_DATA`).
 
 Each `mode` requires exactly one of `fkHere`/`fkThere`:
 
