@@ -38,7 +38,11 @@ export function resolveTableConfig(
 
     if (!dialect) {
         throw new VSRepoAdapterError(
-            `VSRepoDrizzleAdapter doesn't supports your database dialect, it only supports 'postgresql', 'cockroach' and 'sqlite'.`,
+            `VSRepoDrizzleAdapter doesn't support your database dialect for table '${getTableName(table)}' — ` +
+                "it only supports 'postgresql', 'cockroach' and 'sqlite'. If this table really is one of those " +
+                "(e.g. built with a custom table factory that doesn't extend Drizzle's own 'PgTable'/" +
+                "'CockroachTable'/'SQLiteTable'), pass 'dialect' explicitly in the constructor config to skip " +
+                "detection.",
             AdapterErrorCode.NOT_SUPPORTED,
             null,
         );

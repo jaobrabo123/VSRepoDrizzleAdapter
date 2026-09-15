@@ -115,7 +115,7 @@ O `relations` do construtor acima está por extenso pra ficar claro o que cada c
 new DrizzleAdapter(db, {
     table: userTable,            // obrigatório — o objeto Table do Drizzle para esta entidade
     queryKey: "userTable",       // obrigatório — a chave em `db.query` para o query builder relacional desta tabela
-    dialect: "postgresql",       // opcional — "postgresql" (default), "sqlite" ou "cockroach"
+    dialect: "postgresql",       // opcional — auto-detectado a partir da classe da `table` quando omitido; sobrescreve a detecção quando informado
     relationsSchema: relations,  // opcional — o objeto retornado pelo defineRelations() do Drizzle; ver "relationsSchema" abaixo
     relations: { ... },          // opcional — ver "relations no construtor (escrita)" abaixo
 });
@@ -125,7 +125,7 @@ new DrizzleAdapter(db, {
 | --- | --- | --- | --- |
 | `table` | `Table` (de `drizzle-orm`) | Sim | A definição de tabela do Drizzle para a entidade. A primary key é auto-detectada a partir da config de colunas da tabela. |
 | `queryKey` | `keyof db["query"]` | Sim | A chave usada para acessar `db.query[queryKey]` — a entrada de query relacional do Drizzle para esta tabela. |
-| `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | Não | O dialeto SQL. Default: `"postgresql"`. Afeta a sintaxe de placeholders, `ILIKE` vs `LIKE`, e a interpretação de resultados raw. |
+| `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | Não | O dialeto SQL. Auto-detectado a partir da classe do Drizzle da `table` (`PgTable`/`CockroachTable`/`SQLiteTable`) quando omitido — lança `NOT_SUPPORTED` se `table` não for nenhuma das três e `dialect` não foi informado. Um valor explícito sempre sobrescreve a detecção. Afeta a sintaxe de placeholders, `ILIKE` vs `LIKE`, e a interpretação de resultados raw. |
 | `relationsSchema` | O objeto retornado por `defineRelations()` | Não | Habilita duas coisas: reconhecer campos de relação marcados `true` no `select` em qualquer profundidade, e derivar a maior parte do `relations` abaixo. Ver "`relationsSchema`" abaixo. |
 | `relations` | `AdapterRelations<T>` | Não | Config de escrita de relations — ver abaixo. |
 
@@ -327,13 +327,13 @@ const mostExpensive = await productRepository.max("price");
 
 O adapter suporta três dialetos SQL, cada um com comportamento ligeiramente diferente:
 
-| Comportamento | `postgresql` (default) | `sqlite` | `cockroach` |
+| Comportamento | `postgresql` | `sqlite` | `cockroach` |
 | --- | --- | --- | --- |
 | Busca case-insensitive (`contains`, `startsWith`, `endsWith` com `ignoreCase`) | `ILIKE` | `LIKE` (SQLite é case-insensitive pra ASCII por padrão) | `ILIKE` |
 | Placeholders de SQL raw | `$1`, `$2`, ... | `?` | `$1`, `$2`, ... |
 | Interpretação de resultado raw | array de linhas do node-postgres | shape de resultado do better-sqlite3 | array de linhas do node-postgres |
 
-O dialeto é auto-inferido do client Drizzle quando possível, ou você pode setá-lo explicitamente via `dialect` na config.
+O dialeto é auto-detectado a partir da própria classe da `table` no Drizzle (`PgTable`/`CockroachTable`/`SQLiteTable`) quando `dialect` não é informado na config — ver [Config do construtor](#config-do-construtor). Um `dialect` explícito sempre sobrescreve a detecção.
 
 ## Transactions
 
@@ -394,6 +394,7 @@ O `deleteManyReturning` roda um `findMany` no `where` informado (pra capturar os
 | Filtros quantificadores `_every`/`_none` | Suportados, mas disparam um round-trip extra: uma query SQL de prefetch encontra as PKs que casam, então a API de query relacional filtra por essas PKs. |
 | `select` com campos de relação marcados como `true` | Um campo de relação marcado como `true` no `select` só é enviado pro `with` se o adapter conseguir identificar isso — via `relationsSchema` (qualquer profundidade) ou o `relations` do construtor (só primeiro nível) — caso contrário, é tratado como coluna escalar e a query falha. Sem `relationsSchema`, relations aninhadas marcadas como `true` dentro de um objeto `select` são sempre tratadas como colunas (especifique um campo ou use a option `relations`). |
 | Derivação do `relationsSchema` não cobre FK composta nem many-to-many | Uma relation que faz join em mais de uma coluna, ou passa por uma tabela de junção (`through` do Drizzle), volta a precisar de uma entrada `relations` totalmente manual — igual sem `relationsSchema`. |
+| MySQL não suportado | Só `postgresql`, `sqlite` e `cockroach` são suportados. Uma `table` criada com `mysqlTable()` lança `NOT_SUPPORTED` na hora da construção (o dialeto não é auto-detectável, e `dialect` nem tem um valor `"mysql"` pra passar). |
 
 ## Requisitos
 

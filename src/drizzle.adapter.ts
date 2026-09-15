@@ -66,7 +66,9 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      *
      * The constructor validates the provided `db` client and `config` (table, queryKey,
      * dialect, relations, relationsSchema) and throws a `VSRepoAdapterError` if any field
-     * is invalid. The primary key is auto-detected from the Drizzle table's column definitions.
+     * is invalid. The primary key is auto-detected from the Drizzle table's column definitions,
+     * and so is the dialect — from the table's own class (`PgTable`/`CockroachTable`/`SQLiteTable`)
+     * — unless `dialect` is given explicitly, which always wins (see `resolveTableConfig`).
      *
      * @param db - The Drizzle database client instance.
      * @param config - Adapter configuration: table, queryKey, optional dialect, relations and relationsSchema.

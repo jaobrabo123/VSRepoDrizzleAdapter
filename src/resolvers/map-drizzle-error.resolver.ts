@@ -66,7 +66,7 @@ function resolveCodeFromDriverError(dialect: SupportedDialects, error: DriverLik
  * Converts any error caught around a Drizzle call into a `VSRepoAdapterError`,
  * so `DrizzleAdapter` never lets a raw Drizzle/driver error escape. Already
  * wrapped errors — e.g. bubbling up from a nested adapter call, or a
- * config/usage error thrown by the adapter itself (see `resolveFieldsConfig`)
+ * config/usage error thrown by the adapter itself (see `resolveTableConfig`)
  * — are returned as-is instead of being wrapped a second time.
  *
  * @param error - The raw error caught around a Drizzle call.

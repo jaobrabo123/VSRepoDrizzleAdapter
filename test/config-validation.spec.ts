@@ -1,4 +1,6 @@
 import { pgTable, varchar } from "drizzle-orm/pg-core";
+import { sqliteTable, text as sqliteText } from "drizzle-orm/sqlite-core";
+import { mysqlTable, varchar as mysqlVarchar } from "drizzle-orm/mysql-core";
 import { defineRelations } from "drizzle-orm";
 import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
@@ -95,6 +97,45 @@ describe("DrizzleAdapter — validação da config do construtor", () => {
             }).not.toThrow();
         },
     );
+
+    it("sem 'dialect', detecta 'postgresql' automaticamente pela classe da 'table' (pgTable)", () => {
+        const fakeDb = createFakeDb();
+
+        expect(() => {
+            new DrizzleAdapter(fakeDb, { table: userTable, queryKey: "userTable" });
+        }).not.toThrow();
+    });
+
+    it("sem 'dialect', detecta 'sqlite' automaticamente numa sqliteTable", () => {
+        const sqliteUsers = sqliteTable("users", { id: sqliteText().primaryKey() });
+        const fakeDb = createFakeDb(["sqliteUsers"]);
+
+        expect(() => {
+            new DrizzleAdapter(fakeDb, { table: sqliteUsers, queryKey: "sqliteUsers" });
+        }).not.toThrow();
+    });
+
+    it("sem 'dialect', lança 'NOT_SUPPORTED' pra uma tabela de dialeto não suportado (mysqlTable)", () => {
+        const mysqlUsers = mysqlTable("users", { id: mysqlVarchar({ length: 36 }).primaryKey() });
+        const fakeDb = createFakeDb(["mysqlUsers"]);
+
+        try {
+            new DrizzleAdapter(fakeDb, { table: mysqlUsers, queryKey: "mysqlUsers" });
+            throw new Error("deveria ter lançado VSRepoAdapterError");
+        } catch (err) {
+            expect(err).toBeInstanceOf(VSRepoAdapterError);
+            expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.NOT_SUPPORTED);
+        }
+    });
+
+    it("'dialect' explícito evita o 'NOT_SUPPORTED' mesmo numa tabela de dialeto não suportado (mysqlTable)", () => {
+        const mysqlUsers = mysqlTable("users", { id: mysqlVarchar({ length: 36 }).primaryKey() });
+        const fakeDb = createFakeDb(["mysqlUsers"]);
+
+        expect(() => {
+            new DrizzleAdapter(fakeDb, { table: mysqlUsers, queryKey: "mysqlUsers", dialect: "postgresql" });
+        }).not.toThrow();
+    });
 
     it("é lançado quando 'queryKey' está ausente", () => {
         const fakeDb = createFakeDb();

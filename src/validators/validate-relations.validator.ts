@@ -25,7 +25,7 @@
  *    (`otm` -> only `fkThere`; `mto` -> only `fkHere`; `oto` -> exactly one of the two);
  *  - the given `fkHere` is an actual column of *this* adapter's table, and the
  *    given `fkThere` is an actual column of the related `table`;
- *  - the related `table` has a primary key (via `resolveFieldsConfig`, reused
+ *  - the related `table` has a primary key (via `resolveTableConfig`, reused
  *    to resolve `relatedPk`, needed to tell "connect/upsert existing" apart
  *    from "create new" on nested writes).
  *

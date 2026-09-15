@@ -115,7 +115,7 @@ The constructor `relations` above is spelled out in full for clarity. If your `d
 new DrizzleAdapter(db, {
     table: userTable,           // required — the Drizzle Table object for this entity
     queryKey: "userTable",      // required — the key in `db.query` for this table's relational query builder
-    dialect: "postgresql",      // optional — "postgresql" (default), "sqlite", or "cockroach"
+    dialect: "postgresql",      // optional — auto-detected from `table`'s class when omitted; overrides detection when given
     relationsSchema: relations, // optional — the object returned by Drizzle's defineRelations(); see "relationsSchema" below
     relations: { ... },         // optional — see "relations in the constructor (write)" below
 });
@@ -125,7 +125,7 @@ new DrizzleAdapter(db, {
 | --- | --- | --- | --- |
 | `table` | `Table` (from `drizzle-orm`) | Yes | The Drizzle table definition for the entity. The primary key is auto-detected from the table's column config. |
 | `queryKey` | `keyof db["query"]` | Yes | The key used to access `db.query[queryKey]` — Drizzle's relational query entry for this table. |
-| `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | No | The SQL dialect. Defaults to `"postgresql"`. Affects placeholder syntax, `ILIKE` vs `LIKE`, and raw result interpretation. |
+| `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | No | The SQL dialect. Auto-detected from `table`'s own Drizzle class (`PgTable`/`CockroachTable`/`SQLiteTable`) when omitted — throws `NOT_SUPPORTED` if `table` isn't one of those three and `dialect` wasn't given. An explicit value always overrides detection. Affects placeholder syntax, `ILIKE` vs `LIKE`, and raw result interpretation. |
 | `relationsSchema` | The object returned by `defineRelations()` | No | Drives two things: recognizing `true`-marked relation fields in `select` at any nesting depth, and deriving most of `relations` below. See "`relationsSchema`" below. |
 | `relations` | `AdapterRelations<T>` | No | Relation write config — see below. |
 
@@ -327,13 +327,13 @@ const mostExpensive = await productRepository.max("price");
 
 The adapter supports three SQL dialects, each with slightly different behavior:
 
-| Behavior | `postgresql` (default) | `sqlite` | `cockroach` |
+| Behavior | `postgresql` | `sqlite` | `cockroach` |
 | --- | --- | --- | --- |
 | Case-insensitive search (`contains`, `startsWith`, `endsWith` with `ignoreCase`) | `ILIKE` | `LIKE` (SQLite is case-insensitive for ASCII by default) | `ILIKE` |
 | Raw SQL placeholders | `$1`, `$2`, ... | `?` | `$1`, `$2`, ... |
 | Raw result interpretation | node-postgres row array | better-sqlite3 result shape | node-postgres row array |
 
-The dialect is auto-inferred from the Drizzle client when possible, or you can set it explicitly via `dialect` in the config.
+The dialect is auto-detected from the `table`'s own Drizzle class (`PgTable`/`CockroachTable`/`SQLiteTable`) when `dialect` isn't given in the config — see [Constructor config](#constructor-config). An explicit `dialect` always overrides detection.
 
 ## Transactions
 
@@ -394,6 +394,7 @@ await userRepository.transaction(async tx => {
 | `_every`/`_none` quantifier filters | Supported, but trigger an extra round-trip: a SQL prefetch query finds matching PKs, then the relational query API filters by those PKs. |
 | `select` with `true`-marked relation fields | A relation field marked `true` in `select` is only routed to `with` if the adapter can tell it's a relation — via `relationsSchema` (any depth) or the constructor's `relations` (first level only) — otherwise it's treated as a scalar column and the query fails. Without `relationsSchema`, nested relations marked `true` inside a `select` object are always treated as columns (spell out a field or use the `relations` option). |
 | `relationsSchema` derivation doesn't cover composite FKs or many-to-many | A relation that joins on more than one column, or goes through a junction table (Drizzle's `through`), falls back to needing a fully manual `relations` entry — same as without `relationsSchema`. |
+| MySQL not supported | Only `postgresql`, `sqlite`, and `cockroach` are supported. A `table` built with `mysqlTable()` throws `NOT_SUPPORTED` at construction time (dialect can't be auto-detected, and `dialect` has no `"mysql"` value to pass either). |
 
 ## Requirements
 
