@@ -17,7 +17,6 @@ export function createFakeDb(queryKeys: string[] = ["userTable"]): DrizzleDbLike
         insert: vi.fn(),
         update: vi.fn(),
         delete: vi.fn(),
-        selectDistinct: vi.fn(),
         execute: vi.fn(),
         transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db)) as any,
     };
