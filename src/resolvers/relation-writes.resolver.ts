@@ -32,9 +32,6 @@ import { DrizzleTransactionLike } from "../types/drizzle-transaction-like.type.j
 import { PlainObject } from "../types/plain-object.type.js";
 import { ResolvedRelation } from "../types/resolved-relation.type.js";
 
-/** Sentinel returned by `resolveFkHereField` for "leave this field out of the write entirely". */
-const SKIP = Symbol("skip");
-
 function omitKey(item: PlainObject, key: string): PlainObject {
     const clone = { ...item };
     delete clone[key];
@@ -156,9 +153,7 @@ export async function resolveFkHereFields(
         const currentFkValue = currentRow?.[relation.fkHere as string];
         const resolved = await resolveFkHereField(tx, relation, value as PlainObject | null, currentFkValue);
 
-        if (resolved !== SKIP) {
-            scalarFields[relation.fkHere as string] = resolved;
-        }
+        scalarFields[relation.fkHere as string] = resolved;
     }
 }
 

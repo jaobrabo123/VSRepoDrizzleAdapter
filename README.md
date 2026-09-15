@@ -24,6 +24,7 @@
 - [Constructor config](#constructor-config)
 - [Relations](#relations)
   - [The two `relations`](#the-two-relations)
+  - [`relationsSchema`](#relationsschema)
   - [`relations` in the constructor (write)](#relations-in-the-constructor-write)
     - [`mode`](#mode)
     - [`restriction`](#restriction)
@@ -104,16 +105,19 @@ const user = await userRepository.get({ id: "..." }, { relations: { posts: true 
 
 Here the `relations` you pass in the method `options` — shaped like `{ field: true }` — tells the adapter which relations to eager-load via Drizzle's relational query API (`db.query[queryKey].findFirst/findMany` with `with`). If you supply `select`, the `relations` is ignored (Drizzle's relational API doesn't combine `columns` and `with` from different sources). Don't confuse it with the constructor-config `relations`, which describes how relation fields are resolved in write payloads — the difference is explained in [The two `relations`](#the-two-relations).
 
+The constructor `relations` above is spelled out in full for clarity. If your `db` was built with Drizzle's `defineRelations()`, most of that (`mode`/`table`/`fkHere`/`fkThere`/`nullable`) can be derived automatically — see [`relationsSchema`](#relationsschema).
+
 `DrizzleOrmTypes<DB>` ties `VSRepository`'s `getDbClient()`/`transaction()` return types to your real Drizzle types — see [Transactions](#transactions).
 
 ## Constructor config
 
 ```typescript
 new DrizzleAdapter(db, {
-    table: userTable,       // required — the Drizzle Table object for this entity
-    queryKey: "userTable",  // required — the key in `db.query` for this table's relational query builder
-    dialect: "postgresql",  // optional — "postgresql" (default), "sqlite", or "cockroach"
-    relations: { ... },     // optional — see "relations in the constructor (write)" below
+    table: userTable,           // required — the Drizzle Table object for this entity
+    queryKey: "userTable",      // required — the key in `db.query` for this table's relational query builder
+    dialect: "postgresql",      // optional — "postgresql" (default), "sqlite", or "cockroach"
+    relationsSchema: relations, // optional — the object returned by Drizzle's defineRelations(); see "relationsSchema" below
+    relations: { ... },         // optional — see "relations in the constructor (write)" below
 });
 ```
 
@@ -122,9 +126,10 @@ new DrizzleAdapter(db, {
 | `table` | `Table` (from `drizzle-orm`) | Yes | The Drizzle table definition for the entity. The primary key is auto-detected from the table's column config. |
 | `queryKey` | `keyof db["query"]` | Yes | The key used to access `db.query[queryKey]` — Drizzle's relational query entry for this table. |
 | `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | No | The SQL dialect. Defaults to `"postgresql"`. Affects placeholder syntax, `ILIKE` vs `LIKE`, and raw result interpretation. |
+| `relationsSchema` | The object returned by `defineRelations()` | No | Drives two things: recognizing `true`-marked relation fields in `select` at any nesting depth, and deriving most of `relations` below. See "`relationsSchema`" below. |
 | `relations` | `AdapterRelations<T>` | No | Relation write config — see below. |
 
-The config is validated at construction time — an invalid `table`/`queryKey`/`dialect`/`relations` throws a `VSRepoAdapterError` naming the offending field.
+The config is validated at construction time — an invalid `table`/`queryKey`/`dialect`/`relationsSchema`/`relations` throws a `VSRepoAdapterError` naming the offending field.
 
 ## Relations
 
@@ -135,11 +140,71 @@ The name `relations` appears in **two different places** in the API, with **diff
 | | `relations` in the **constructor** | `relations` in **method options** |
 | --- | --- | --- |
 | Where you define it | `new DrizzleAdapter(db, { relations: ... })` | `repository.get(where, { relations: ... })` — and other methods |
-| Shape | One **config object** per field: `{ mode, restriction, table, fkHere/fkThere, nullable? }` | One **`true`/sub-object** per field: `{ posts: true }` |
+| Shape | One **config object** per field: `{ restriction, mode?, table?, fkHere?/fkThere?, nullable? }` — everything but `restriction` can be auto-derived, see `relationsSchema` below | One **`true`/sub-object** per field: `{ posts: true }` |
 | Purpose | **Write** — when a `create`/`update`/`upsert`/`save`/`merge` payload contains a relation field, tells the adapter how to resolve it imperatively (insert/update/delete related rows, set FK values) | **Read** — eager loading: which relations to fetch alongside the result (becomes a Drizzle `with` clause) |
-| Depends on the other? | No — it only affects writes/`merge` | Only for `select`: a relation field marked `true` is only recognized as a relation (routed to `with`) if it's configured in the constructor. The `relations` option itself is independent |
+| Depends on the other? | No — it only affects writes/`merge` | Only for `select`: a relation field marked `true` is only recognized as a relation (routed to `with`) if the adapter can tell it's a relation — via `relationsSchema` (any depth) or, failing that, the constructor's `relations` (first level only). The `relations` option itself is independent |
 
-The constructor `relations` governs write behavior even if you never pass `relations` in options — but the reverse is only partially true: the method-options `relations` does eager loading even when the constructor has no `relations`, while `select` with a relation field marked `true` does depend on the constructor config (see below). The two subsections below cover each one.
+The constructor `relations` governs write behavior even if you never pass `relations` in options — but the reverse is only partially true: the method-options `relations` does eager loading even when the constructor has no `relations`, while `select` with a relation field marked `true` does depend on `relationsSchema`/the constructor's `relations` (see below). The two subsections below cover each one.
+
+### `relationsSchema`
+
+`relationsSchema` is the object Drizzle's `defineRelations(schema, r => ({ ... }))` returns — the same one you pass to `drizzle(client, { relations })`:
+
+```typescript
+import { defineRelations } from "drizzle-orm";
+import * as schema from "./schema.js";
+
+export const relations = defineRelations(schema, r => ({
+    userTable: {
+        posts: r.many.postTable(),
+        address: r.one.addressTable(),
+    },
+    postTable: {
+        user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
+    },
+    addressTable: {
+        user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
+    },
+}));
+
+export const db = drizzle(client, { relations });
+```
+
+Passing it into the adapter's constructor drives two things:
+
+1. **Reads** — `select`s with a relation field marked `true` are recognized at any nesting depth (a relation of a relation, e.g. `posts: { category: true }`, works too — see the note at the end of "`relations` in method options (read)" below).
+2. **Writes** — each field of the constructor's `relations` (below) gets its `table`/`mode`/`fkHere`/`fkThere`/`nullable` auto-derived from the schema, so you typically only need to spell out `restriction`:
+
+```typescript
+relations: {
+    posts: { restriction: "add" },
+    address: { restriction: "set", nullable: true }, // nullable overrides the derived value
+}
+```
+
+Derivation, per relation:
+
+| Drizzle relation | Derived `mode` | Derived FK | Derived `nullable` |
+| --- | --- | --- | --- |
+| `relationType: "many"` | `"otm"` | `fkThere` — the FK column on the related table | n/a |
+| `relationType: "one"`, FK column on the related table (e.g. an inferred/reversed 1-1, like `userTable.address`) | `"oto"` | `fkThere` | `!` the FK column's `notNull` |
+| `relationType: "one"`, FK column on this table, unique (1-1, e.g. `addressTable.user`) | `"oto"` | `fkHere` | `!` the FK column's `notNull` |
+| `relationType: "one"`, FK column on this table, not unique (e.g. `postTable.user`) | `"mto"` | `fkHere` | `!` the FK column's `notNull` |
+
+`nullable` is derived from the physical FK column's `notNull` — **not** Drizzle's own `optional` flag on the relation, which defaults to `true` regardless of the column's actual constraint unless you opt into `optional: false` by hand in `defineRelations()`, so it isn't a reliable signal here.
+
+Any field you spell out explicitly in `relations` always overrides the derived value for that field — useful for a `nullable` business rule that isn't reflected in the DB column (the `address` example above: `Address.userId` is `NOT NULL`, but the app still wants `address: null` in a payload to delete the row).
+
+`restriction` is **never** derived — there's no schema equivalent for it, it's purely a write-behavior choice (see below) and always has to be given by hand.
+
+Derivation is skipped — the field falls back to needing a fully manual entry, same as without `relationsSchema` — when:
+- the field isn't a relation on this table in `relationsSchema` (typo, or genuinely not there);
+- the relation joins on more than one column (a composite FK);
+- the relation goes through a junction table (Drizzle's `through`, for many-to-many) — `AdapterRelation` has no shape for many-to-many either way, see "`mode`" below.
+
+You can inspect what would be derived for a given field yourself via the exported `deriveRelation(relationsSchema, tableKey, key)` helper.
+
+`relationsSchema` is entirely optional: everything above also works — you just do it all by hand — with the fully manual `relations` config described next.
 
 ### `relations` in the constructor (write)
 
@@ -154,6 +219,8 @@ relations: {
     author: { mode: "mto", restriction: "set", table: userTable, fkHere: "authorId" },
 }
 ```
+
+(With `relationsSchema` configured, `mode`/`table`/`fkHere`/`fkThere`/`nullable` above are usually derived automatically — see "`relationsSchema`" above; only `restriction` is always required.)
 
 Without `relations`, every field — including relation fields — is passed straight through to the Drizzle `insert`/`update` `values`/`set`, as-is. That works for scalar fields, but Drizzle has no nested-write API (unlike Prisma), so the adapter resolves relation writes imperatively: it splits the payload, inserts/updates related rows in the correct order, and wires FK values. If your entity has relations you'll usually want to configure them.
 
@@ -219,11 +286,11 @@ const user = await userRepository.get(
 );
 ```
 
-This object is turned into a Drizzle `with` clause by the adapter (`parseWith`). It does **not** use the constructor's `relations` config: it's purely a read-side option and works even with no `relations` in the config. This independence holds **only** for the `relations` option — it does **not** hold for `select` (see below).
+This object is turned into a Drizzle `with` clause by the adapter (`parseWith`). It does **not** use the constructor's `relations`/`relationsSchema` config: it's purely a read-side option and works even with no `relations`/`relationsSchema` in the config. This independence holds **only** for the `relations` option — it does **not** hold for `select` (see below).
 
 The `select` and `relations` you pass in the options are turned into Drizzle `columns` (`parseColumns`) and a Drizzle `with` clause, respectively. When `select` is provided, only the fields listed in `select` are fetched — if any of those fields are relation fields, they're automatically moved into the `with` clause. In other words, `select` subsumes `relations` when both are provided.
 
-> **`select` depends on the constructor `relations` for `true`-marked relation fields.** When a `select` marks a relation field as `true` (e.g. `select: { posts: true }`), `parseColumns` only knows `posts` is a relation (and routes it to `with`) if `posts` is configured in the constructor's `relations`. Without the constructor config, `posts: true` is treated as a scalar column and the query fails. A relation field given as an object (e.g. `select: { posts: { title: true } }`) is always routed to `with`, regardless of the constructor config. Nested relations marked `true` inside a `select` object (a relation of a relation, without spelling out its fields) are **always** treated as columns — if you need to load a nested relation via `select`, spell out at least one field (`posts: { category: { id: true } }`), or prefer the `relations` option, which never depends on the constructor config.
+> **`select` depends on `relationsSchema`/the constructor's `relations` for `true`-marked relation fields.** When a `select` marks a relation field as `true` (e.g. `select: { posts: true }`), `parseColumns` only knows `posts` is a relation (and routes it to `with`) if the adapter can tell — via `relationsSchema`, or, failing that, the constructor's `relations`. Without either, `posts: true` is treated as a scalar column and the query fails. A relation field given as an object (e.g. `select: { posts: { title: true } }`) is always routed to `with`, regardless of config. Nested relations marked `true` inside a `select` object (a relation of a relation, without spelling out its fields, e.g. `posts: { category: true }`) are recognized **only when `relationsSchema` is configured** — it's what lets the adapter look up `postTable`'s own relations to resolve `category`, at any depth. Without `relationsSchema` (only the constructor's `relations`, which only describes the *current* table's relations), a nested `true` like that is always treated as a column — spell out at least one field instead (`posts: { category: { id: true } }`), or prefer the `relations` option, which never depends on either config.
 
 ## `merge`
 
@@ -327,7 +394,8 @@ await userRepository.transaction(async tx => {
 | No `mtm` mode | Many-to-many relations are not supported. Model them as two `otm` relations through a join table. |
 | No `timeoutMs` in transactions | Drizzle's transaction API doesn't expose a timeout parameter — passing `timeoutMs` throws `NOT_SUPPORTED`. |
 | `_every`/`_none` quantifier filters | Supported, but trigger an extra round-trip: a SQL prefetch query finds matching PKs, then the relational query API filters by those PKs. |
-| `select` with `true`-marked relation fields | A relation field marked `true` in `select` is only routed to `with` if it's configured in the constructor's `relations` — otherwise it's treated as a scalar column and the query fails. Nested relations marked `true` inside a `select` object are always treated as columns (spell out a field or use the `relations` option). |
+| `select` with `true`-marked relation fields | A relation field marked `true` in `select` is only routed to `with` if the adapter can tell it's a relation — via `relationsSchema` (any depth) or the constructor's `relations` (first level only) — otherwise it's treated as a scalar column and the query fails. Without `relationsSchema`, nested relations marked `true` inside a `select` object are always treated as columns (spell out a field or use the `relations` option). |
+| `relationsSchema` derivation doesn't cover composite FKs or many-to-many | A relation that joins on more than one column, or goes through a junction table (Drizzle's `through`), falls back to needing a fully manual `relations` entry — same as without `relationsSchema`. |
 
 ## Requirements
 

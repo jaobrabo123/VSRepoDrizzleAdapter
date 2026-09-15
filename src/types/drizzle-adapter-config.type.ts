@@ -1,4 +1,4 @@
-import { Table } from "drizzle-orm";
+import { Table, TablesRelationalConfig } from "drizzle-orm";
 import { DrizzleDbLike } from "./drizzle-db-like.type.js";
 import { SupportedDialects } from "./supported-dialects.type.js";
 import { AdapterRelations } from "./adapter-relations.type.js";
@@ -9,7 +9,8 @@ import { AdapterRelations } from "./adapter-relations.type.js";
  * @property table - The Drizzle `Table` object representing the entity's database table. The primary key is auto-detected from this table's column config.
  * @property dialect - The SQL dialect to use. Defaults to `"postgresql"`. Affects placeholder syntax, case-insensitive search behavior, and raw result interpretation.
  * @property queryKey - The key in `db.query` that maps to this table's relational query builder (e.g. `"userTable"` for `db.query.userTable`).
- * @property relations - Optional relation write config. Describes how relation fields in write payloads (`create`/`update`/`save`/`upsert`/`merge`) should be resolved imperatively.
+ * @property relations - Optional relation write config. Describes how relation fields in write payloads (`create`/`update`/`save`/`upsert`/`merge`) should be resolved imperatively. When `relationsSchema` is also given, each field's `table`/`mode`/`fkHere`/`fkThere`/`nullable` is derived from it and only needs to be spelled out here to override the derived value — `restriction` still always has to be provided by hand.
+ * @property relationsSchema - Optional: the object returned by Drizzle's `defineRelations(schema, r => ({ ... }))` (the same one you pass to `drizzle(client, { relations })`). When given, it drives two things: (1) `select`s with a relation field marked `true` are recognized at any nesting depth, not just the first level; (2) relation write config (`relations` above) has its `table`/`mode`/`fkHere`/`fkThere`/`nullable` auto-derived per field.
  *
  * @publicApi
  */
@@ -18,4 +19,5 @@ export type DrizzleAdapterConfig<T, K extends DrizzleDbLike = DrizzleDbLike> = {
     dialect?: SupportedDialects;
     queryKey: keyof K["query"];
     relations?: AdapterRelations<T>;
+    relationsSchema?: TablesRelationalConfig;
 };

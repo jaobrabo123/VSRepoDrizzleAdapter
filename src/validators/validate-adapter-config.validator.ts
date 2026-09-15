@@ -4,6 +4,7 @@ import { DrizzleAdapterConfig } from "../types/drizzle-adapter-config.type.js";
 import { DrizzleDbLike } from "../types/drizzle-db-like.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
 import { SupportedDialects } from "../types/supported-dialects.type.js";
+import { isPlainObject } from "./is-plain-object.validator.js";
 
 const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set(["postgresql", "sqlite", "cockroach"]);
 
@@ -24,7 +25,9 @@ const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set(["postgresql"
  *  - `config.queryKey` is a non-empty string (code `INVALID_ADAPTER_CONFIG`);
  *  - `db.query[config.queryKey]` exists and exposes `findFirst`/`findMany` —
  *    catches a typo'd/mismatched `queryKey` in the constructor, not three
- *    calls later inside `findOne` (code `MODEL_NOT_FOUND`).
+ *    calls later inside `findOne` (code `MODEL_NOT_FOUND`);
+ *  - `config.relationsSchema`, when provided, is a plain object (the shape
+ *    returned by Drizzle's `defineRelations()`) (code `INVALID_ADAPTER_CONFIG`).
  */
 export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
     db: unknown,
@@ -57,7 +60,7 @@ export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
         );
     }
 
-    const { table, dialect, queryKey } = config as DrizzleAdapterConfig<T, K>;
+    const { table, dialect, queryKey, relationsSchema } = config as DrizzleAdapterConfig<T, K>;
 
     if (!is(table, Table)) {
         throw new VSRepoAdapterError(
@@ -81,6 +84,16 @@ export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
         throw new VSRepoAdapterError(
             "Invalid constructor config (queryKey): expected a non-empty string matching a key of 'db.query' " +
                 "(the name your schema exports the table under, e.g. 'userTable').",
+            AdapterErrorCode.INVALID_ADAPTER_CONFIG,
+            null,
+        );
+    }
+
+    if (relationsSchema !== undefined && !isPlainObject(relationsSchema)) {
+        throw new VSRepoAdapterError(
+            "Invalid constructor config (relationsSchema): expected the object returned by Drizzle's " +
+                "'defineRelations()' (the same one passed to 'drizzle(client, { relations })'), mapping each " +
+                "table's schema export key to its '{ table, name, relations }' config.",
             AdapterErrorCode.INVALID_ADAPTER_CONFIG,
             null,
         );

@@ -30,6 +30,8 @@ import { parseOrderBy } from "./parsers/order-by.parser.js";
 import { parseSqlOrderBy } from "./parsers/sql-order-by.parser.js";
 import { PlainObject } from "./types/plain-object.type.js";
 import { ResolvedRelation } from "./types/resolved-relation.type.js";
+import { RelationsResolver } from "./types/relations-resolver.type.js";
+import { createFlatRelationsResolver, createRelationsResolver } from "./resolvers/relations-resolver.resolver.js";
 import { mergeEntities } from "./resolvers/merge-entities.resolver.js";
 import { resolveFkHereFields, resolveFkThereFields, splitWritePayload } from "./resolvers/relation-writes.resolver.js";
 
@@ -57,17 +59,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly pk: string;
     private readonly queryKey: keyof K["query"];
     private readonly relations?: Map<string, ResolvedRelation>;
-    private readonly relationsKeysSet?: Set<string>;
+    private readonly relationsResolver?: RelationsResolver;
 
     /**
      * Creates a new Drizzle adapter instance.
      *
      * The constructor validates the provided `db` client and `config` (table, queryKey,
-     * dialect, relations) and throws a `VSRepoAdapterError` if any field is invalid.
-     * The primary key is auto-detected from the Drizzle table's column definitions.
+     * dialect, relations, relationsSchema) and throws a `VSRepoAdapterError` if any field
+     * is invalid. The primary key is auto-detected from the Drizzle table's column definitions.
      *
      * @param db - The Drizzle database client instance.
-     * @param config - Adapter configuration: table, queryKey, optional dialect and relations.
+     * @param config - Adapter configuration: table, queryKey, optional dialect, relations and relationsSchema.
      *
      * @publicApi
      */
@@ -84,9 +86,19 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         const fieldsConfig = resolveFieldsConfig(this.table);
         this.pk = fieldsConfig.pk;
 
-        this.relations = validateRelations<T>(this.table, validated.config.relations);
-        if (this.relations) {
-            this.relationsKeysSet = new Set(Object.keys(this.relations));
+        const relationsSchema = validated.config.relationsSchema;
+
+        this.relations = validateRelations<T>(
+            this.table,
+            validated.config.relations,
+            relationsSchema,
+            this.queryKey as string,
+        );
+
+        if (relationsSchema) {
+            this.relationsResolver = createRelationsResolver(relationsSchema, this.queryKey as string);
+        } else if (this.relations) {
+            this.relationsResolver = createFlatRelationsResolver(new Set(this.relations.keys()));
         }
     }
 
@@ -111,10 +123,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * given, `select` wins and `relations` is ignored entirely.
      *
      * When `select` contains a relation field marked as `true`, `parseColumns`
-     * only routes it to `with` if that field is configured in the constructor's
-     * `relations` (the `relationsKeysSet`) — otherwise it's treated as a column
-     * and the query fails. Nested relations marked as `true` inside a `select`
-     * object are always treated as columns (see `parseColumns` docs).
+     * only routes it to `with` if that field is recognized as a relation by
+     * `this.relationsResolver` — otherwise it's treated as a column and the
+     * query fails. `relationsResolver` is built from `relationsSchema` when
+     * given (recognizes relations-of-relations too, at any depth) or, as a
+     * fallback, from the constructor's write-only `relations` config
+     * (single level only — see `parseColumns` docs).
      */
     private async resolveReadArgs(
         where: VSRepoWhere<T>,
@@ -127,7 +141,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         let withArg: PlainObject | undefined;
 
         if (options.select) {
-            const parsedSelect = parseColumns(options.select, this.relationsKeysSet);
+            const parsedSelect = parseColumns(options.select, this.relationsResolver);
             columns = parsedSelect.columns;
             withArg = parsedSelect.with;
         } else if (options.relations) {

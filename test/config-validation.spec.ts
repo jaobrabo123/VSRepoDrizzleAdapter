@@ -1,8 +1,9 @@
 import { pgTable, varchar } from "drizzle-orm/pg-core";
+import { defineRelations } from "drizzle-orm";
 import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import { createFakeDb } from "./helpers/fake-db.helper.js";
-import { addressTable, postTable, userTable } from "../dev/drizzle/schema.js";
+import { addressTable, categoryTable, postTable, userTable } from "../dev/drizzle/schema.js";
 import { SupportedDialects } from "../src/index.js";
 
 describe("DrizzleAdapter — validação do client Drizzle", () => {
@@ -494,3 +495,159 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
         }
     });
 });
+
+describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a partir do defineRelations)", () => {
+    function makeDb() {
+        return createFakeDb(["userTable", "postTable", "addressTable", "categoryTable"]);
+    }
+
+    // Mesmo shape de dev/drizzle/db.ts, sem precisar de uma conexão real —
+    // 'defineRelations' não toca no banco, só lê o schema.
+    const relationsSchema = defineRelations(
+        { userTable, postTable, addressTable, categoryTable },
+        r => ({
+            addressTable: {
+                user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
+            },
+            postTable: {
+                category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
+                user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
+            },
+            categoryTable: {
+                posts: r.many.postTable(),
+            },
+            userTable: {
+                address: r.one.addressTable(),
+                posts: r.many.postTable(),
+            },
+        }),
+    );
+
+    it("é lançado quando 'relationsSchema' não é um objeto plano", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema: [] as any,
+            });
+        }).toThrow(VSRepoAdapterError);
+    });
+
+    it("não precisa de 'relations' pra funcionar sozinho (só habilita reconhecer relations no 'select')", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema,
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'table'/'mode'/'fkThere' de uma relation 'otm' (userTable.posts) só com 'restriction'", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema,
+                relations: { posts: { restriction: "add" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'oto' + 'fkThere' quando o FK está na tabela relacionada (userTable.address)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema,
+                relations: { address: { restriction: "set" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'oto' + 'fkHere' quando o FK está nesta tabela e é unique (addressTable.user)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: addressTable,
+                queryKey: "addressTable",
+                relationsSchema,
+                relations: { user: { restriction: "set" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'mto' + 'fkHere' quando o FK está nesta tabela e não é unique (postTable.user)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: postTable,
+                queryKey: "postTable",
+                relationsSchema,
+                relations: { user: { restriction: "set" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'mto' + 'fkHere' (postTable.category, FK nullable)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: postTable,
+                queryKey: "postTable",
+                relationsSchema,
+                relations: { category: { restriction: "set" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("o campo explícito do usuário sempre vence o valor derivado (override de 'nullable')", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema,
+                // 'address.userId' é NOT NULL -> derivado seria 'nullable: false';
+                // aqui forçamos 'true' pra permitir 'address: null' apagar o registro.
+                relations: { address: { restriction: "set", nullable: true } },
+            });
+        }).not.toThrow();
+    });
+
+    it("o campo explícito do usuário sempre vence o valor derivado (override de 'mode'/'fkHere'/'table')", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema,
+                relations: { posts: { restriction: "add", fkThere: "userId", table: postTable, mode: "otm" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("é lançado quando a relation não existe em 'relationsSchema' e nada foi dado manualmente", () => {
+        try {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relationsSchema,
+                relations: { naoExiste: { restriction: "add" } },
+            });
+            throw new Error("deveria ter lançado VSRepoAdapterError");
+        } catch (err) {
+            expect(err).toBeInstanceOf(VSRepoAdapterError);
+            expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.INVALID_ADAPTER_CONFIG);
+            expect((err as Error).message).toContain("relations.naoExiste");
+        }
+    });
+
+    it("ainda funciona 100% manual quando 'relationsSchema' não é passado (compat)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: userTable,
+                queryKey: "userTable",
+                relations: {
+                    posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
+                },
+            });
+        }).not.toThrow();
+    });
+});
+

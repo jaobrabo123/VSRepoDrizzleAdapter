@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { defineRelations } from "drizzle-orm";
 import * as schema from "./schema.js";
 
-const relations = defineRelations(schema, r => ({
+export const relations = defineRelations(schema, r => ({
     addressTable: {
         user: r.one.userTable({
             from: r.addressTable.userId,

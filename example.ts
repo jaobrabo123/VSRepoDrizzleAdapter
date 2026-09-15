@@ -1,6 +1,6 @@
-import { addressTable, postTable, userTable } from "./dev/drizzle/schema.js";
+import { userTable } from "./dev/drizzle/schema.js";
 import { DeepPartial, DynamicMethod, MethodOptions, QueryMethod, VSRepository } from "vsrepo";
-import { db } from "./dev/drizzle/db.js";
+import { db, relations } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
 import { Role } from "./dev/enum/role.enum.js";
@@ -12,20 +12,16 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
             adapter: new DrizzleAdapter(db, {
                 table: userTable,
                 queryKey: "userTable",
+                // 'relationsSchema' é o mesmo objeto retornado por 'defineRelations()' que já
+                // vai pro 'drizzle(client, { relations })' — table/mode/fkHere/fkThere são
+                // derivados dele pra 'posts' e 'address', então só sobra o que não tem
+                // equivalente no schema do Drizzle: 'restriction' é sempre manual, e
+                // 'nullable' aqui é um override (Address.userId é NOT NULL, mas queremos
+                // permitir 'address: null' no payload pra apagar o registro).
+                relationsSchema: relations,
                 relations: {
-                    posts: {
-                        mode: "otm",
-                        fkThere: "userId",
-                        restriction: "add",
-                        table: postTable,
-                    },
-                    address: {
-                        mode: "oto",
-                        restriction: "set",
-                        table: addressTable,
-                        fkThere: "userId",
-                        nullable: true,
-                    },
+                    posts: { restriction: "add" },
+                    address: { restriction: "set", nullable: true },
                 },
             }),
             pkName: "id",
