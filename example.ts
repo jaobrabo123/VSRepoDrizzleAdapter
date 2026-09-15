@@ -12,12 +12,6 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
             adapter: new DrizzleAdapter(db, {
                 table: userTable,
                 queryKey: "userTable",
-                // 'relationsSchema' é o mesmo objeto retornado por 'defineRelations()' que já
-                // vai pro 'drizzle(client, { relations })' — table/mode/fkHere/fkThere são
-                // derivados dele pra 'posts' e 'address', então só sobra o que não tem
-                // equivalente no schema do Drizzle: 'restriction' é sempre manual, e
-                // 'nullable' aqui é um override (Address.userId é NOT NULL, mas queremos
-                // permitir 'address: null' no payload pra apagar o registro).
                 relationsSchema: relations,
                 relations: {
                     posts: { restriction: "add" },

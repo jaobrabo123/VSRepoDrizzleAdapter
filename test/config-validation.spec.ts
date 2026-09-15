@@ -503,25 +503,22 @@ describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a par
 
     // Mesmo shape de dev/drizzle/db.ts, sem precisar de uma conexão real —
     // 'defineRelations' não toca no banco, só lê o schema.
-    const relationsSchema = defineRelations(
-        { userTable, postTable, addressTable, categoryTable },
-        r => ({
-            addressTable: {
-                user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
-            },
-            postTable: {
-                category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
-                user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
-            },
-            categoryTable: {
-                posts: r.many.postTable(),
-            },
-            userTable: {
-                address: r.one.addressTable(),
-                posts: r.many.postTable(),
-            },
-        }),
-    );
+    const relationsSchema = defineRelations({ userTable, postTable, addressTable, categoryTable }, r => ({
+        addressTable: {
+            user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
+        },
+        postTable: {
+            category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
+            user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
+        },
+        categoryTable: {
+            posts: r.many.postTable(),
+        },
+        userTable: {
+            address: r.one.addressTable(),
+            posts: r.many.postTable(),
+        },
+    }));
 
     it("é lançado quando 'relationsSchema' não é um objeto plano", () => {
         expect(() => {
@@ -587,7 +584,7 @@ describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a par
         }).not.toThrow();
     });
 
-    it("deriva 'mto' + 'fkHere' (postTable.category, FK nullable)", () => {
+    it("deriva 'mto' + 'fkHere' (postTable.category, FK nullable na coluna, mas isso não afeta a derivação)", () => {
         expect(() => {
             new DrizzleAdapter(makeDb(), {
                 table: postTable,
@@ -598,14 +595,13 @@ describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a par
         }).not.toThrow();
     });
 
-    it("o campo explícito do usuário sempre vence o valor derivado (override de 'nullable')", () => {
+    it("'nullable' nunca é derivado — precisa vir explícito em 'relations' mesmo com 'relationsSchema'", () => {
         expect(() => {
             new DrizzleAdapter(makeDb(), {
                 table: userTable,
                 queryKey: "userTable",
                 relationsSchema,
-                // 'address.userId' é NOT NULL -> derivado seria 'nullable: false';
-                // aqui forçamos 'true' pra permitir 'address: null' apagar o registro.
+                // 'nullable' true pra permitir que 'address: null' apague o registro.
                 relations: { address: { restriction: "set", nullable: true } },
             });
         }).not.toThrow();
@@ -650,4 +646,3 @@ describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a par
         }).not.toThrow();
     });
 });
-

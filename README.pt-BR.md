@@ -105,7 +105,7 @@ const user = await userRepository.get({ id: "..." }, { relations: { posts: true 
 
 Aqui, o `relations` passado no `options` do método — com a forma `{ campo: true }` — diz ao adapter quais relations carregar via API de query relacional do Drizzle (`db.query[queryKey].findFirst/findMany` com `with`). Se você fornecer `select`, o `relations` é ignorado (a API relacional do Drizzle não combina `columns` e `with` de fontes diferentes). Não confunda com o `relations` da config do construtor, que descreve como campos de relação são resolvidos em payloads de escrita — a diferença é explicada em [Os dois `relations`](#os-dois-relations).
 
-O `relations` do construtor acima está por extenso pra ficar claro o que cada campo faz. Se o seu `db` foi montado com o `defineRelations()` do Drizzle, a maior parte disso (`mode`/`table`/`fkHere`/`fkThere`/`nullable`) pode ser derivada automaticamente — ver [`relationsSchema`](#relationsschema).
+O `relations` do construtor acima está por extenso pra ficar claro o que cada campo faz. Se o seu `db` foi montado com o `defineRelations()` do Drizzle, a maior parte disso (`mode`/`table`/`fkHere`/`fkThere`) pode ser derivada automaticamente — ver [`relationsSchema`](#relationsschema).
 
 `DrizzleOrmTypes<DB>` amarra os tipos de retorno de `getDbClient()`/`transaction()` do `VSRepository` aos seus tipos reais do Drizzle — ver [Transactions](#transactions).
 
@@ -140,7 +140,7 @@ O nome `relations` aparece em **dois lugares diferentes** da API, com **formas e
 | | `relations` no **construtor** | `relations` nas **options** |
 | --- | --- | --- |
 | Onde você define | `new DrizzleAdapter(db, { relations: ... })` | `repository.get(where, { relations: ... })` — e demais métodos |
-| Formato | Um objeto de **configuração** por campo: `{ restriction, mode?, table?, fkHere?/fkThere?, nullable? }` — tudo menos `restriction` pode ser derivado automaticamente, ver `relationsSchema` abaixo | Um objeto por campo **só com `true` ou sub-objeto**: `{ posts: true }` |
+| Formato | Um objeto de **configuração** por campo: `{ restriction, mode?, table?, fkHere?/fkThere?, nullable? }` — tudo menos `restriction`/`nullable` pode ser derivado automaticamente, ver `relationsSchema` abaixo | Um objeto por campo **só com `true` ou sub-objeto**: `{ posts: true }` |
 | Propósito | **Escrita** — quando um payload de `create`/`update`/`upsert`/`save`/`merge` tem campo de relação, diz como resolvê-lo imperativamente (inserir/atualizar/deletar linhas relacionadas, setar valores de FK) | **Leitura** — eager loading: quais relations trazer junto no resultado (vira uma cláusula `with` do Drizzle) |
 | Precisa da outra? | Não — só afeta escritas/`merge` | Só no caso do `select`: um campo de relação marcado como `true` só é reconhecido como relação (enviado pro `with`) se o adapter conseguir identificar isso — via `relationsSchema` (qualquer profundidade) ou, na falta dele, o `relations` do construtor (só primeiro nível). A option `relations` em si é independente |
 
@@ -173,36 +173,34 @@ export const db = drizzle(client, { relations });
 Passar isso no construtor do adapter habilita duas coisas:
 
 1. **Leitura** — `select`s com campo de relação marcado `true` são reconhecidos em qualquer profundidade de aninhamento (uma relation de uma relation, ex.: `posts: { category: true }`, também funciona — ver a nota no fim de "`relations` nas options (leitura)" abaixo).
-2. **Escrita** — cada campo do `relations` do construtor (abaixo) tem `table`/`mode`/`fkHere`/`fkThere`/`nullable` derivados automaticamente do schema, então normalmente só é preciso especificar `restriction`:
+2. **Escrita** — cada campo do `relations` do construtor (abaixo) tem `table`/`mode`/`fkHere`/`fkThere` derivados automaticamente do schema, então normalmente só é preciso especificar `restriction` e `nullable`:
 
 ```typescript
 relations: {
     posts: { restriction: "add" },
-    address: { restriction: "set", nullable: true }, // nullable sobrescreve o valor derivado
+    address: { restriction: "set", nullable: true },
 }
 ```
 
 Derivação, por relation:
 
-| Relation do Drizzle | `mode` derivado | FK derivada | `nullable` derivado |
-| --- | --- | --- | --- |
-| `relationType: "many"` | `"otm"` | `fkThere` — a coluna de FK na tabela relacionada | não se aplica |
-| `relationType: "one"`, coluna de FK na tabela relacionada (ex.: uma 1-1 inferida/invertida, como `userTable.address`) | `"oto"` | `fkThere` | `!` do `notNull` da coluna de FK |
-| `relationType: "one"`, coluna de FK nesta tabela, unique (1-1, ex.: `addressTable.user`) | `"oto"` | `fkHere` | `!` do `notNull` da coluna de FK |
-| `relationType: "one"`, coluna de FK nesta tabela, não-unique (ex.: `postTable.user`) | `"mto"` | `fkHere` | `!` do `notNull` da coluna de FK |
+| Relation do Drizzle | `mode` derivado | FK derivada |
+| --- | --- | --- |
+| `relationType: "many"` | `"otm"` | `fkThere` — a coluna de FK na tabela relacionada |
+| `relationType: "one"`, coluna de FK na tabela relacionada (ex.: uma 1-1 inferida/invertida, como `userTable.address`) | `"oto"` | `fkThere` |
+| `relationType: "one"`, coluna de FK nesta tabela, unique (1-1, ex.: `addressTable.user`) | `"oto"` | `fkHere` |
+| `relationType: "one"`, coluna de FK nesta tabela, não-unique (ex.: `postTable.user`) | `"mto"` | `fkHere` |
 
-`nullable` é derivado do `notNull` da coluna de FK física — **não** do flag `optional` do próprio Drizzle na relation, que tem default `true` independente da constraint real da coluna, a menos que você configure `optional: false` manualmente no `defineRelations()` — por isso ele não é um sinal confiável aqui.
+**`nullable` nunca é derivado** — ele é sempre `false` (não-nullable) a menos que você configure explicitamente em `relations`, exatamente como sem `relationsSchema`.
 
-Qualquer campo que você especificar explicitamente em `relations` sempre sobrescreve o valor derivado pra aquele campo — útil pra uma regra de negócio de `nullable` que não está refletida na coluna do banco (o exemplo de `address` acima: `Address.userId` é `NOT NULL`, mas a aplicação ainda quer que `address: null` no payload apague o registro).
+Qualquer outro campo que você especificar explicitamente em `relations` sempre sobrescreve o valor derivado pra aquele campo.
 
-`restriction` **nunca** é derivado — não tem equivalente no schema, é puramente uma escolha de comportamento de escrita (ver abaixo) e sempre precisa ser dado manualmente.
+`restriction` também **nunca** é derivado — não tem equivalente no schema, é puramente uma escolha de comportamento de escrita (ver abaixo) e sempre precisa ser dado manualmente.
 
-A derivação é pulada — o campo volta a precisar de uma entrada totalmente manual, igual sem `relationsSchema` — quando:
+A derivação de `mode`/`table`/`fkHere`/`fkThere` é pulada — o campo volta a precisar de uma entrada totalmente manual, igual sem `relationsSchema` — quando:
 - o campo não é uma relation dessa tabela em `relationsSchema` (erro de digitação, ou realmente não existe);
 - a relation faz join em mais de uma coluna (uma FK composta);
 - a relation passa por uma tabela de junção (o `through` do Drizzle, pra many-to-many) — `AdapterRelation` não tem forma pra many-to-many de qualquer forma, ver "`mode`" abaixo.
-
-Você pode inspecionar o que seria derivado pra um campo específico com o helper exportado `deriveRelation(relationsSchema, tableKey, key)`.
 
 `relationsSchema` é totalmente opcional: tudo acima também funciona — só que manualmente — com a config `relations` 100% manual descrita a seguir.
 
@@ -220,7 +218,7 @@ relations: {
 }
 ```
 
-(Com `relationsSchema` configurado, o `mode`/`table`/`fkHere`/`fkThere`/`nullable` acima costumam ser derivados automaticamente — ver "`relationsSchema`" acima; só `restriction` é sempre obrigatório.)
+(Com `relationsSchema` configurado, o `mode`/`table`/`fkHere`/`fkThere` acima costumam ser derivados automaticamente — ver "`relationsSchema`" acima; `restriction` é sempre obrigatório, e `nullable` também sempre que você precisar que `null` signifique algo — ele nunca é derivado, ver acima.)
 
 Sem `relations`, todo campo — incluindo campos de relação — é repassado direto pro `values`/`set` do `insert`/`update` do Drizzle, como está. Isso funciona bem pra campos escalares, mas o Drizzle não tem API de nested-write (diferente do Prisma) — então o adapter resolve as escritas de relação imperativamente: separa o payload, insere/atualiza linhas relacionadas na ordem correta, e conecta os valores de FK. Se sua entidade tem relations, normalmente você vai querer configurá-las.
 

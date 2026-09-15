@@ -16,7 +16,7 @@ import cleanDbHelper from "./helpers/clean-db.helper.js";
 import { createAddress, createCategory, createPost, createUser } from "./helpers/fixtures.js";
 import { addressTable, categoryTable, postTable, userTable } from "../dev/drizzle/schema.js";
 import { Address, Post, User } from "../dev/entities.js";
-import { db } from "../dev/drizzle/db.js";
+import { db, relations } from "../dev/drizzle/db.js";
 
 describe("DrizzleAdapter (integração com Postgres real)", () => {
     let userAdapter: DrizzleAdapter<User>;
@@ -270,6 +270,24 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             await createAddress(user.id);
 
             await expect(naoNullableAdapter.update({ id: user.id }, { address: null })).rejects.toThrow(
+                VSRepoAdapterError,
+            );
+
+            const rows = await db.select().from(addressTable);
+            expect(rows).toHaveLength(1); // nada foi apagado
+        });
+
+        it("com 'relationsSchema' configurado mas SEM 'nullable' explícito, 'address: null' ainda lança erro (nullable nunca é inferido)", async () => {
+            const semNullableExplicito = new DrizzleAdapter<User>(db, {
+                queryKey: "userTable",
+                table: userTable,
+                relationsSchema: relations,
+                relations: { address: { restriction: "set" } },
+            });
+            const user = await createUser({ email: "ana@example.com" });
+            await createAddress(user.id);
+
+            await expect(semNullableExplicito.update({ id: user.id }, { address: null })).rejects.toThrow(
                 VSRepoAdapterError,
             );
 

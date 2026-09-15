@@ -14,7 +14,7 @@ import {
 import { DrizzleAdapterConfig } from "./types/drizzle-adapter-config.type.js";
 import { DrizzleDbLike } from "./types/drizzle-db-like.type.js";
 import { SupportedDialects } from "./types/supported-dialects.type.js";
-import { resolveFieldsConfig } from "./resolvers/fields-config.resolver.js";
+import { resolveTableConfig } from "./resolvers/table-config.resolver.js";
 import { DrizzleTransactionLike } from "./types/drizzle-transaction-like.type.js";
 import { resolveIsolationLevel } from "./resolvers/isolation-level.resolver.js";
 import { resolveRawSql } from "./resolvers/raw-sql.resolver.js";
@@ -80,17 +80,18 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
         this.db = validated.db;
         this.table = validated.config.table;
-        this.dialect = validated.config.dialect ?? "postgresql";
         this.queryKey = validated.config.queryKey;
 
-        const fieldsConfig = resolveFieldsConfig(this.table);
-        this.pk = fieldsConfig.pk;
+        const { pk, dialect } = resolveTableConfig(this.table, validated.config.dialect);
+        this.pk = pk;
+        this.dialect = dialect;
 
         const relationsSchema = validated.config.relationsSchema;
 
         this.relations = validateRelations<T>(
             this.table,
             validated.config.relations,
+            this.dialect,
             relationsSchema,
             this.queryKey as string,
         );

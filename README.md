@@ -105,7 +105,7 @@ const user = await userRepository.get({ id: "..." }, { relations: { posts: true 
 
 Here the `relations` you pass in the method `options` — shaped like `{ field: true }` — tells the adapter which relations to eager-load via Drizzle's relational query API (`db.query[queryKey].findFirst/findMany` with `with`). If you supply `select`, the `relations` is ignored (Drizzle's relational API doesn't combine `columns` and `with` from different sources). Don't confuse it with the constructor-config `relations`, which describes how relation fields are resolved in write payloads — the difference is explained in [The two `relations`](#the-two-relations).
 
-The constructor `relations` above is spelled out in full for clarity. If your `db` was built with Drizzle's `defineRelations()`, most of that (`mode`/`table`/`fkHere`/`fkThere`/`nullable`) can be derived automatically — see [`relationsSchema`](#relationsschema).
+The constructor `relations` above is spelled out in full for clarity. If your `db` was built with Drizzle's `defineRelations()`, most of that (`mode`/`table`/`fkHere`/`fkThere`) can be derived automatically — see [`relationsSchema`](#relationsschema).
 
 `DrizzleOrmTypes<DB>` ties `VSRepository`'s `getDbClient()`/`transaction()` return types to your real Drizzle types — see [Transactions](#transactions).
 
@@ -140,7 +140,7 @@ The name `relations` appears in **two different places** in the API, with **diff
 | | `relations` in the **constructor** | `relations` in **method options** |
 | --- | --- | --- |
 | Where you define it | `new DrizzleAdapter(db, { relations: ... })` | `repository.get(where, { relations: ... })` — and other methods |
-| Shape | One **config object** per field: `{ restriction, mode?, table?, fkHere?/fkThere?, nullable? }` — everything but `restriction` can be auto-derived, see `relationsSchema` below | One **`true`/sub-object** per field: `{ posts: true }` |
+| Shape | One **config object** per field: `{ restriction, mode?, table?, fkHere?/fkThere?, nullable? }` — everything but `restriction`/`nullable` can be auto-derived, see `relationsSchema` below | One **`true`/sub-object** per field: `{ posts: true }` |
 | Purpose | **Write** — when a `create`/`update`/`upsert`/`save`/`merge` payload contains a relation field, tells the adapter how to resolve it imperatively (insert/update/delete related rows, set FK values) | **Read** — eager loading: which relations to fetch alongside the result (becomes a Drizzle `with` clause) |
 | Depends on the other? | No — it only affects writes/`merge` | Only for `select`: a relation field marked `true` is only recognized as a relation (routed to `with`) if the adapter can tell it's a relation — via `relationsSchema` (any depth) or, failing that, the constructor's `relations` (first level only). The `relations` option itself is independent |
 
@@ -173,36 +173,34 @@ export const db = drizzle(client, { relations });
 Passing it into the adapter's constructor drives two things:
 
 1. **Reads** — `select`s with a relation field marked `true` are recognized at any nesting depth (a relation of a relation, e.g. `posts: { category: true }`, works too — see the note at the end of "`relations` in method options (read)" below).
-2. **Writes** — each field of the constructor's `relations` (below) gets its `table`/`mode`/`fkHere`/`fkThere`/`nullable` auto-derived from the schema, so you typically only need to spell out `restriction`:
+2. **Writes** — each field of the constructor's `relations` (below) gets its `table`/`mode`/`fkHere`/`fkThere` auto-derived from the schema, so you typically only need to spell out `restriction` and `nullable`:
 
 ```typescript
 relations: {
     posts: { restriction: "add" },
-    address: { restriction: "set", nullable: true }, // nullable overrides the derived value
+    address: { restriction: "set", nullable: true },
 }
 ```
 
 Derivation, per relation:
 
-| Drizzle relation | Derived `mode` | Derived FK | Derived `nullable` |
-| --- | --- | --- | --- |
-| `relationType: "many"` | `"otm"` | `fkThere` — the FK column on the related table | n/a |
-| `relationType: "one"`, FK column on the related table (e.g. an inferred/reversed 1-1, like `userTable.address`) | `"oto"` | `fkThere` | `!` the FK column's `notNull` |
-| `relationType: "one"`, FK column on this table, unique (1-1, e.g. `addressTable.user`) | `"oto"` | `fkHere` | `!` the FK column's `notNull` |
-| `relationType: "one"`, FK column on this table, not unique (e.g. `postTable.user`) | `"mto"` | `fkHere` | `!` the FK column's `notNull` |
+| Drizzle relation | Derived `mode` | Derived FK |
+| --- | --- | --- |
+| `relationType: "many"` | `"otm"` | `fkThere` — the FK column on the related table |
+| `relationType: "one"`, FK column on the related table (e.g. an inferred/reversed 1-1, like `userTable.address`) | `"oto"` | `fkThere` |
+| `relationType: "one"`, FK column on this table, unique (1-1, e.g. `addressTable.user`) | `"oto"` | `fkHere` |
+| `relationType: "one"`, FK column on this table, not unique (e.g. `postTable.user`) | `"mto"` | `fkHere` |
 
-`nullable` is derived from the physical FK column's `notNull` — **not** Drizzle's own `optional` flag on the relation, which defaults to `true` regardless of the column's actual constraint unless you opt into `optional: false` by hand in `defineRelations()`, so it isn't a reliable signal here.
+**`nullable` is never derived** — it's always `false` (not nullable) unless you set it explicitly in `relations`, exactly like without `relationsSchema`.
 
-Any field you spell out explicitly in `relations` always overrides the derived value for that field — useful for a `nullable` business rule that isn't reflected in the DB column (the `address` example above: `Address.userId` is `NOT NULL`, but the app still wants `address: null` in a payload to delete the row).
+Any other field you spell out explicitly in `relations` always overrides the derived value for that field.
 
-`restriction` is **never** derived — there's no schema equivalent for it, it's purely a write-behavior choice (see below) and always has to be given by hand.
+`restriction` is **never** derived either — there's no schema equivalent for it, it's purely a write-behavior choice (see below) and always has to be given by hand.
 
-Derivation is skipped — the field falls back to needing a fully manual entry, same as without `relationsSchema` — when:
+Derivation is skipped for `mode`/`table`/`fkHere`/`fkThere` — the field falls back to needing a fully manual entry, same as without `relationsSchema` — when:
 - the field isn't a relation on this table in `relationsSchema` (typo, or genuinely not there);
 - the relation joins on more than one column (a composite FK);
 - the relation goes through a junction table (Drizzle's `through`, for many-to-many) — `AdapterRelation` has no shape for many-to-many either way, see "`mode`" below.
-
-You can inspect what would be derived for a given field yourself via the exported `deriveRelation(relationsSchema, tableKey, key)` helper.
 
 `relationsSchema` is entirely optional: everything above also works — you just do it all by hand — with the fully manual `relations` config described next.
 
@@ -220,7 +218,7 @@ relations: {
 }
 ```
 
-(With `relationsSchema` configured, `mode`/`table`/`fkHere`/`fkThere`/`nullable` above are usually derived automatically — see "`relationsSchema`" above; only `restriction` is always required.)
+(With `relationsSchema` configured, `mode`/`table`/`fkHere`/`fkThere` above are usually derived automatically — see "`relationsSchema`" above; `restriction` is always required, and so is `nullable` whenever you need `null` to mean something — it's never derived, see above.)
 
 Without `relations`, every field — including relation fields — is passed straight through to the Drizzle `insert`/`update` `values`/`set`, as-is. That works for scalar fields, but Drizzle has no nested-write API (unlike Prisma), so the adapter resolves relation writes imperatively: it splits the payload, inserts/updates related rows in the correct order, and wires FK values. If your entity has relations you'll usually want to configure them.
 

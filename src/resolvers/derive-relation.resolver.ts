@@ -6,12 +6,11 @@ export type DerivedRelation = {
     mode: "otm" | "mto" | "oto";
     fkHere?: string;
     fkThere?: string;
-    nullable?: boolean;
 };
 
 /**
- * Derives `table`/`mode`/`fkHere`/`fkThere`/`nullable` for one relation field
- * straight from a Drizzle `defineRelations()` schema — so the constructor's
+ * Derives `table`/`mode`/`fkHere`/`fkThere` for one relation field straight
+ * from a Drizzle `defineRelations()` schema — so the constructor's
  * `relations` config only has to spell out `restriction` (which has no
  * schema equivalent — it's a write-behavior choice) plus whatever field the
  * derivation gets wrong for that relation.
@@ -32,11 +31,15 @@ export type DerivedRelation = {
  *      and `mode` becomes `oto` (source FK column is unique -> enforces
  *      1-1) or `mto` (not unique -> plain many-to-one) accordingly.
  *    - Neither is a PK -> ambiguous, can't derive safely.
- *    `nullable` is read off the physical FK column's `notNull` — not
- *    Drizzle's own `optional` flag on the relation, which defaults to
- *    `true` regardless of the column's actual constraint unless the schema
- *    author opts into `optional: false` by hand in `defineRelations()`, so
- *    it isn't a reliable signal here.
+ *
+ * `nullable` is deliberately **never** derived, even though the physical FK
+ * column's `notNull` would often give a reasonable guess. Whether sending
+ * `null` for a relation should delete/disconnect a related row is a
+ * data-safety decision, not a schema fact — inferring it wrong (e.g. from a
+ * nullable column the app never actually meant to expose as "deletable via
+ * `null`") would mean silent, implicit data loss. It always has to be set
+ * by hand in the constructor's `relations` (defaults to `false`/non-nullable
+ * when omitted, same as without `relationsSchema`).
  *
  * Returns `undefined` when the relation can't be derived — not present in
  * `relationsSchema`, a composite-column join, a many-to-many `through`
@@ -65,7 +68,7 @@ export function deriveRelation(
     }
 
     if (sourceColumn.primary) {
-        return { table: targetTable, mode: "oto", fkThere: targetColumn.name, nullable: !targetColumn.notNull };
+        return { table: targetTable, mode: "oto", fkThere: targetColumn.name };
     }
 
     if (targetColumn.primary) {
@@ -73,7 +76,6 @@ export function deriveRelation(
             table: targetTable,
             mode: sourceColumn.isUnique ? "oto" : "mto",
             fkHere: sourceColumn.name,
-            nullable: !sourceColumn.notNull,
         };
     }
 

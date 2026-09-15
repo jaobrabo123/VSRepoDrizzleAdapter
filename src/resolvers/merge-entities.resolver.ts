@@ -1,5 +1,5 @@
 /**
- * Deep-merges, IN MEMORY (nothing is persisted), a fetched `result` with the
+ * Deep-merges, IN MEMORY, a fetched `result` with the
  * `obj` payload passed to `merge()` — same behavior as
  * `VSRepoPrisma7Adapter`'s `mergeEntities`, minus the `mtm` case (this
  * adapter has no `mtm` relation mode). It's on the caller to decide what to

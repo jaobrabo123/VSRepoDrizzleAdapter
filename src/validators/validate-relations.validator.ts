@@ -7,12 +7,15 @@
  * When `relationsSchema` (a Drizzle `defineRelations()` schema) and
  * `tableKey` are given, each relation is first merged with whatever
  * `deriveRelation` can read off the Drizzle schema for that field — so
- * `table`/`mode`/`fkHere`/`fkThere`/`nullable` only need to be spelled out
- * in the constructor's `relations` config when they're missing from the
- * schema (composite FK, `through` relation) or need overriding (e.g. a
- * `nullable` business rule that isn't reflected in the DB column). Fields
- * explicitly given by the user always win over the derived value.
- * `restriction` is never derived — it's always required from the user.
+ * `table`/`mode`/`fkHere`/`fkThere` only need to be spelled out in the
+ * constructor's `relations` config when they're missing from the schema
+ * (composite FK, `through` relation) or need overriding. Fields explicitly
+ * given by the user always win over the derived value. `restriction` is
+ * never derived — it's always required from the user. Neither is
+ * `nullable`: unlike the other fields, it's never read from
+ * `relationsSchema` even when one is configured (see `deriveRelation`'s
+ * docs) — omitting it always means `false`/non-nullable, exactly like
+ * without `relationsSchema`.
  *
  * For every configured relation, after merging, checks, in order:
  *  - `table` is a Drizzle `Table` instance;
@@ -38,9 +41,10 @@ import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { AdapterRelations } from "../types/adapter-relations.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
 import { ResolvedRelation } from "../types/resolved-relation.type.js";
-import { resolveFieldsConfig } from "../resolvers/fields-config.resolver.js";
+import { resolveTableConfig } from "../resolvers/table-config.resolver.js";
 import { deriveRelation } from "../resolvers/derive-relation.resolver.js";
 import { isPlainObject } from "./is-plain-object.validator.js";
+import { SupportedDialects } from "../types/supported-dialects.type.js";
 
 const MODES = new Set(["otm", "mto", "oto"]);
 const RESTRICTIONS = new Set(["set", "add"]);
@@ -62,6 +66,7 @@ function pick<F extends string>(rawRelation: PlainObject, derived: PlainObject |
 export function validateRelations<T>(
     table: Table,
     relations: AdapterRelations<T> | undefined,
+    dialect: SupportedDialects,
     relationsSchema?: TablesRelationalConfig,
     tableKey?: string,
 ): Map<string, ResolvedRelation> | undefined {
@@ -92,7 +97,7 @@ export function validateRelations<T>(
         const relatedTable = pick(rawObj, derived, "table");
         const fkHere = pick(rawObj, derived, "fkHere");
         const fkThere = pick(rawObj, derived, "fkThere");
-        const nullable = pick(rawObj, derived, "nullable");
+        const nullable = rawObj.nullable;
 
         if (!is(relatedTable, Table)) {
             fail(
@@ -117,7 +122,7 @@ export function validateRelations<T>(
             );
         }
 
-        const thereColumns = new Set(Object.keys(getColumns(relatedTable as Table)));
+        const thereColumns = new Set(Object.keys(getColumns(relatedTable)));
 
         if (mode === "otm") {
             if (fkHere !== undefined) {
@@ -132,7 +137,7 @@ export function validateRelations<T>(
             if (!thereColumns.has(fkThere)) {
                 fail(
                     `Invalid constructor config (relations.${key}.fkThere): '${fkThere}' is not a column of table ` +
-                        `'${getTableName(relatedTable as Table)}'.`,
+                        `'${getTableName(relatedTable)}'.`,
                 );
             }
         } else if (mode === "mto") {
@@ -180,19 +185,19 @@ export function validateRelations<T>(
                 if (typeof fkThere !== "string" || !thereColumns.has(fkThere)) {
                     fail(
                         `Invalid constructor config (relations.${key}.fkThere): '${describe(fkThere)}' is not a ` +
-                            `column of table '${getTableName(relatedTable as Table)}'.`,
+                            `column of table '${getTableName(relatedTable)}'.`,
                     );
                 }
             }
         }
 
         // Throws INVALID_ADAPTER_CONFIG (reused error code) if the related table has no pk.
-        const relatedFieldsConfig = resolveFieldsConfig(relatedTable as Table);
+        const relatedFieldsConfig = resolveTableConfig(relatedTable, dialect);
 
         resolved.set(key, {
             mode: mode as "otm" | "mto" | "oto",
             restriction,
-            table: relatedTable as Table,
+            table: relatedTable,
             fkHere: fkHere as string | undefined,
             fkThere: fkThere as string | undefined,
             nullable: nullable as boolean | undefined,

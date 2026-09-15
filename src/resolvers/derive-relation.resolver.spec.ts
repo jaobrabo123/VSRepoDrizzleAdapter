@@ -39,12 +39,12 @@ describe("deriveRelation", () => {
     it("relation 'one' inferida/reversa (userTable.address) -> mode 'oto' + fkThere (FK na tabela relacionada)", () => {
         const derived = deriveRelation(relationsSchema, "userTable", "address");
 
-        expect(derived?.table).toBe(addressTable);
-        expect(derived?.mode).toBe("oto");
-        expect(derived?.fkHere).toBeUndefined();
-        expect(derived?.fkThere).toBe("userId");
-        // addressTable.userId é NOT NULL -> não-opcional.
-        expect(derived?.nullable).toBe(false);
+        expect(derived).toEqual({
+            table: addressTable,
+            mode: "oto",
+            fkThere: "userId",
+        });
+        expect(derived).not.toHaveProperty("nullable");
     });
 
     it("relation 'one' explícita com FK unique nesta tabela (addressTable.user) -> mode 'oto' + fkHere", () => {
@@ -54,7 +54,6 @@ describe("deriveRelation", () => {
             table: userTable,
             mode: "oto",
             fkHere: "userId",
-            nullable: false,
         });
     });
 
@@ -65,19 +64,18 @@ describe("deriveRelation", () => {
             table: userTable,
             mode: "mto",
             fkHere: "userId",
-            nullable: false,
         });
     });
 
-    it("relation 'one' com FK nullable nesta tabela (postTable.category) -> 'nullable: true'", () => {
+    it("relation 'one' com FK nullable nesta tabela (postTable.category) -> 'nullable' continua fora do derivado", () => {
         const derived = deriveRelation(relationsSchema, "postTable", "category");
 
         expect(derived).toEqual({
             table: categoryTable,
             mode: "mto",
             fkHere: "categoryId",
-            nullable: true,
         });
+        expect(derived).not.toHaveProperty("nullable");
     });
 
     it("relation 'many' inferida/reversa (categoryTable.posts) -> mode 'otm' + fkThere", () => {
