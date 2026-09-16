@@ -8,7 +8,10 @@ import { resolveTableConfig } from "./table-config.resolver.js";
 const pgUsers = pgTable("users", { id: pgUuid().primaryKey(), name: pgVarchar({ length: 10 }) });
 const crdbUsers = cockroachTable("users", { id: crdbUuid().primaryKey(), name: crdbVarchar({ length: 10 }) });
 const sqliteUsers = sqliteTable("users", { id: sqliteText().primaryKey(), name: sqliteText() });
-const mysqlUsers = mysqlTable("users", { id: mysqlVarchar({ length: 36 }).primaryKey(), name: mysqlVarchar({ length: 10 }) });
+const mysqlUsers = mysqlTable("users", {
+    id: mysqlVarchar({ length: 36 }).primaryKey(),
+    name: mysqlVarchar({ length: 10 }),
+});
 const pgUsersWithoutPk = pgTable("users", { name: pgVarchar({ length: 10 }) });
 
 describe("resolveTableConfig", () => {

@@ -13,7 +13,7 @@
 
 [Read in English](./README.md)
 
-> Implementação de `VSRepoAdapter` para o [VSRepository v2](https://github.com/jaobrabo123/VSRepository) usando [Drizzle ORM](https://orm.drizzle.team/). Traduz toda operação do `VSRepository` em chamadas do Drizzle — queries relacionais (`db.query`), query builders do core (`db.select`/`insert`/`update`/`delete`), e SQL raw via `db.execute` — resolvendo `VSRepoWhere`, `Ordering`, `select`/`relations` através de parsers dedicados e — quando uma config de `relations` é fornecida — resolvendo campos de relação em `create`/`update`/`upsert`/`save`/`merge` imperativamente, já que o Drizzle não tem uma API de nested-write nativa.
+> Implementação de `VSRepoAdapter` para o [VSRepository v2](https://github.com/jaobrabo123/VSRepository) usando [Drizzle ORM](https://orm.drizzle.team/). Traduz toda operação do `VSRepository` em chamadas do Drizzle — queries relacionais (`db.query`), query builders do core (`db.select`/`insert`/`update`/`delete`), e SQL raw via `db.execute` — resolvendo `VSRepoWhere`, `Ordering`, `select`/`relations` através de parsers dedicados e — quando uma config de `relations` é fornecida — resolvendo campos de relação em `create`/`update`/`upsert`/`save`/`merge` imperativamente.
 
 ---
 
@@ -44,10 +44,10 @@
 ## Instalação
 
 ```bash
-npm install vsrepo drizzle-orm @vsrepo/drizzle-adapter
+npm install vsrepo drizzle-orm @vsrepo/drizzle-adapter@alpha
 ```
 
-Tanto o `vsrepo` quanto o `@vsrepo/drizzle-adapter` já foram publicados no npm. Você também precisa de um driver de banco do Drizzle para o seu dialeto (ex: `pg`, `better-sqlite3`).
+A versão `alpha` do `@vsrepo/drizzle-adapter` foi publicada; você pode instalá-la especificando a tag `@alpha`. O `vsrepo` já foi lançado e está pronto para uso. Você também precisa de um driver de banco do Drizzle para o seu dialeto (ex: `pg`, `better-sqlite3`).
 
 ## Uso básico
 
@@ -103,7 +103,7 @@ const userRepository = new UserRepository();
 const user = await userRepository.get({ id: "..." }, { relations: { posts: true } });
 ```
 
-Aqui, o `relations` passado no `options` do método — com a forma `{ campo: true }` — diz ao adapter quais relations carregar via API de query relacional do Drizzle (`db.query[queryKey].findFirst/findMany` com `with`). Se você fornecer `select`, o `relations` é ignorado (a API relacional do Drizzle não combina `columns` e `with` de fontes diferentes). Não confunda com o `relations` da config do construtor, que descreve como campos de relação são resolvidos em payloads de escrita — a diferença é explicada em [Os dois `relations`](#os-dois-relations).
+Aqui, o `relations` passado no `options` do método — com a forma `{ campo: true }` — diz ao adapter quais relations carregar via API de query relacional do Drizzle (`db.query[queryKey].findFirst/findMany` com `with`). Se você fornecer `select`, o `relations` é ignorado. Não confunda com o `relations` da config do construtor, que descreve como campos de relação são resolvidos em payloads de escrita — a diferença é explicada em [Os dois `relations`](#os-dois-relations).
 
 O `relations` do construtor acima está por extenso pra ficar claro o que cada campo faz. Se o seu `db` foi montado com o `defineRelations()` do Drizzle, a maior parte disso (`mode`/`table`/`fkHere`/`fkThere`) pode ser derivada automaticamente — ver [`relationsSchema`](#relationsschema).
 
@@ -220,7 +220,7 @@ relations: {
 
 (Com `relationsSchema` configurado, o `mode`/`table`/`fkHere`/`fkThere` acima costumam ser derivados automaticamente — ver "`relationsSchema`" acima; `restriction` é sempre obrigatório, e `nullable` também sempre que você precisar que `null` signifique algo — ele nunca é derivado, ver acima.)
 
-Sem `relations`, todo campo — incluindo campos de relação — é repassado direto pro `values`/`set` do `insert`/`update` do Drizzle, como está. Isso funciona bem pra campos escalares, mas o Drizzle não tem API de nested-write (diferente do Prisma) — então o adapter resolve as escritas de relação imperativamente: separa o payload, insere/atualiza linhas relacionadas na ordem correta, e conecta os valores de FK. Se sua entidade tem relations, normalmente você vai querer configurá-las.
+Sem `relations`, todo campo — incluindo campos de relação — é repassado direto pro `values`/`set` do `insert`/`update` do Drizzle, como está. Isso funciona bem pra campos escalares, mas o Drizzle não tem API de nested-write — então o adapter resolve as escritas de relação imperativamente: separa o payload, insere/atualiza linhas relacionadas na ordem correta, e conecta os valores de FK. Se sua entidade tem relations, normalmente você vai querer configurá-las.
 
 #### `mode`
 
@@ -382,7 +382,7 @@ await userRepository.transaction(async tx => {
 
 ### Concorrência em `deleteManyReturning`
 
-O `deleteManyReturning` roda um `findMany` no `where` informado (pra capturar os registros que vai devolver) e depois re-aplica o mesmo `where` num `deleteMany`. Por causa desse formato em duas etapas, uma alteração concorrente entre o `findMany` e o `deleteMany` pode fazer os dois divergirem — os registros retornados e as linhas realmente deletadas não têm garantia de serem idênticos sob concorrência. Rode dentro de um `transaction()` num nível de isolamento mais alto se você precisar de consistência estrita.
+O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra capturar os registros e suas pks) e depois deleta por `inArray(pk, pks)` em vez de reaplicar o `where`. Isso garante que as linhas deletadas sejam sempre exatamente as que foram retornadas, mesmo que outra linha passe a bater (ou deixe de bater) com o `where` entre as duas etapas. Isso não torna a operação totalmente atômica, porém: uma linha ainda pode ser alterada ou deletada concorrentemente entre o `findMany` e o delete por pk, então os campos não-pk de um registro retornado podem estar desatualizados, ou sua pk pode não bater com nenhuma linha mais no momento do delete (o que deleta silenciosamente 0 linhas pra ela, sem lançar erro). Rode dentro de um `transaction()` num nível de isolamento mais alto se você precisar de consistência estrita.
 
 ## Limitações conhecidas
 

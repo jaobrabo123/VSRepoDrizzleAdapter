@@ -13,7 +13,7 @@
 
 [Ler em portugues](./README.pt-BR.md)
 
-> `VSRepoAdapter` implementation for [VSRepository v2](https://github.com/jaobrabo123/VSRepository) backed by [Drizzle ORM](https://orm.drizzle.team/). It translates every `VSRepository` operation into Drizzle calls — relational queries (`db.query`), core query builders (`db.select`/`insert`/`update`/`delete`), and raw SQL via `db.execute` — resolving `VSRepoWhere`, `Ordering`, `select`/`relations` through dedicated parsers, and — when a `relations` config is provided — resolving relation fields on `create`/`update`/`upsert`/`save`/`merge` imperatively, since Drizzle has no built-in nested-write API.
+> `VSRepoAdapter` implementation for [VSRepository v2](https://github.com/jaobrabo123/VSRepository) backed by [Drizzle ORM](https://orm.drizzle.team/). It translates every `VSRepository` operation into Drizzle calls — relational queries (`db.query`), core query builders (`db.select`/`insert`/`update`/`delete`), and raw SQL via `db.execute` — resolving `VSRepoWhere`, `Ordering`, `select`/`relations` through dedicated parsers, and — when a `relations` config is provided — resolving relation fields on `create`/`update`/`upsert`/`save`/`merge` imperatively.
 
 ---
 
@@ -44,10 +44,10 @@
 ## Installation
 
 ```bash
-npm install vsrepo drizzle-orm @vsrepo/drizzle-adapter
+npm install vsrepo drizzle-orm @vsrepo/drizzle-adapter@alpha
 ```
 
-Both `vsrepo` and `@vsrepo/drizzle-adapter` are published to npm. You also need a Drizzle database driver for your dialect (e.g. `pg`, `better-sqlite3`).
+The `alpha` version of `@vsrepo/drizzle-adapter` has been published; you can install it by specifying the `@alpha` tag. `vsrepo` is already released and ready for use. You also need a Drizzle database driver for your dialect (e.g., `pg`, `better-sqlite3`).
 
 ## Basic usage
 
@@ -103,7 +103,7 @@ const userRepository = new UserRepository();
 const user = await userRepository.get({ id: "..." }, { relations: { posts: true } });
 ```
 
-Here the `relations` you pass in the method `options` — shaped like `{ field: true }` — tells the adapter which relations to eager-load via Drizzle's relational query API (`db.query[queryKey].findFirst/findMany` with `with`). If you supply `select`, the `relations` is ignored (Drizzle's relational API doesn't combine `columns` and `with` from different sources). Don't confuse it with the constructor-config `relations`, which describes how relation fields are resolved in write payloads — the difference is explained in [The two `relations`](#the-two-relations).
+Here the `relations` you pass in the method `options` — shaped like `{ field: true }` — tells the adapter which relations to eager-load via Drizzle's relational query API (`db.query[queryKey].findFirst/findMany` with `with`). If you supply `select`, the `relations` is ignored. Don't confuse it with the constructor-config `relations`, which describes how relation fields are resolved in write payloads — the difference is explained in [The two `relations`](#the-two-relations).
 
 The constructor `relations` above is spelled out in full for clarity. If your `db` was built with Drizzle's `defineRelations()`, most of that (`mode`/`table`/`fkHere`/`fkThere`) can be derived automatically — see [`relationsSchema`](#relationsschema).
 
@@ -220,7 +220,7 @@ relations: {
 
 (With `relationsSchema` configured, `mode`/`table`/`fkHere`/`fkThere` above are usually derived automatically — see "`relationsSchema`" above; `restriction` is always required, and so is `nullable` whenever you need `null` to mean something — it's never derived, see above.)
 
-Without `relations`, every field — including relation fields — is passed straight through to the Drizzle `insert`/`update` `values`/`set`, as-is. That works for scalar fields, but Drizzle has no nested-write API (unlike Prisma), so the adapter resolves relation writes imperatively: it splits the payload, inserts/updates related rows in the correct order, and wires FK values. If your entity has relations you'll usually want to configure them.
+Without `relations`, every field — including relation fields — is passed straight through to the Drizzle `insert`/`update` `values`/`set`, as-is. That works for scalar fields, but Drizzle has no nested-write API, so the adapter resolves relation writes imperatively: it splits the payload, inserts/updates related rows in the correct order, and wires FK values. If your entity has relations you'll usually want to configure them.
 
 #### `mode`
 
@@ -382,7 +382,7 @@ await userRepository.transaction(async tx => {
 
 ### Concurrency in `deleteManyReturning`
 
-`deleteManyReturning` runs a `findMany` on the given `where` (to capture the records it will return) and then re-applies the same `where` to a `deleteMany`. Because of this two-step shape, a concurrent change between the `findMany` and the `deleteMany` can make them diverge — the returned records and the rows actually deleted are not guaranteed to be identical under concurrency. Run inside a `transaction()` at a higher isolation level if you need strict consistency.
+`deleteManyReturning` runs a `findMany` on the given `where` first (to capture the records and their PKs) and then deletes by `inArray(pk, pks)` instead of re-applying `where`. This means the deleted rows are always exactly the ones returned, even if another row starts or stops matching `where` between the two steps. It does not make the operation fully atomic, though: a row can still be concurrently modified or deleted between the `findMany` and the delete by pk, so a returned record's non-pk fields may be stale, or its pk may no longer match any row by the time the delete runs (which silently deletes 0 rows for it, without erroring). Run inside a `transaction()` at a higher isolation level if you need strict consistency.
 
 ## Known limitations
 

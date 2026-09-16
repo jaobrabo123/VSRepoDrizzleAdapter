@@ -1,4 +1,4 @@
-import { avg, count as countFn, eq, max as maxFn, min as minFn, sql, sum as sumFn, Table } from "drizzle-orm";
+import { avg, count as countFn, eq, inArray, max as maxFn, min as minFn, sql, sum as sumFn, Table } from "drizzle-orm";
 import {
     AdapterErrorCode,
     AdapterMethodOptions,
@@ -600,6 +600,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, options, true);
+
+                const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
+
+                // * Precisa injetar a pk para poder acessar no where lá em baixo
+                if (columnsWithoutPk) {
+                    readArg.columns[this.pk] = true;
+                }
+
                 const current = await this.getQueryBuilder(tx).findFirst(readArg);
 
                 if (!current) {
@@ -610,8 +618,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     );
                 }
 
-                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
-                await (tx as any).delete(this.table).where(eq(pkColumn, (current as PlainObject)[this.pk]));
+                const pkColumn = (this.table as PlainObject)[this.pk];
+                await tx.delete(this.table).where(eq(pkColumn, current[this.pk]));
+
+                // * Retira a pk do retorno se o usuário não solicitou
+                if (columnsWithoutPk) {
+                    delete current[this.pk];
+                }
 
                 return current as T;
             });
@@ -644,8 +657,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     /**
      * Deletes all records matching `where` and returns them.
      *
-     * Runs a `findMany` first (to capture the records), then a `deleteMany` with the same
-     * `where`. Under concurrency, the returned records and the actually deleted rows may diverge.
+     * Runs a `findMany` on `where` first (to capture the records and their PKs), then deletes
+     * by `inArray(pk, pks)` instead of re-applying `where` — so the deleted rows are exactly the
+     * ones returned, even if another row starts/stops matching `where` between the two steps.
+     *
+     * This does not make the operation fully atomic: a row can still be concurrently modified or
+     * deleted between the `findMany` and the `delete` by pk, in which case the returned record's
+     * non-pk fields may be stale, or that pk may no longer match any row (silently deleting 0 for
+     * it). Run inside a `transaction()` at a higher isolation level if you need strict consistency.
      *
      * @publicApi
      */
@@ -653,12 +672,32 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, options);
-                const toReturn = (await this.getQueryBuilder(tx).findMany(readArg)) as T[];
 
-                const condition = parseSqlWhere(where, this.getSqlWhereContext(tx));
+                const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
+
+                // * Precisa injetar a pk para poder acessar no condition lá em baixo
+                if (columnsWithoutPk) {
+                    readArg.columns[this.pk] = true;
+                }
+
+                const allRemoved = await this.getQueryBuilder(tx).findMany(readArg);
+
+                const pks: any[] = [];
+
+                for (const removed of allRemoved) {
+                    pks.push(removed[this.pk]);
+                    // * Retira a pk do retorno se o usuário não solicitou
+                    if (columnsWithoutPk) {
+                        delete removed[this.pk];
+                    }
+                }
+
+                const pkColumn = (this.table as PlainObject)[this.pk];
+                const condition = inArray(pkColumn, pks);
+
                 await (tx as any).delete(this.table).where(condition);
 
-                return toReturn;
+                return allRemoved as T[];
             });
         } catch (error) {
             throw mapDrizzleError(error, "deleteManyReturning", this.dialect);
