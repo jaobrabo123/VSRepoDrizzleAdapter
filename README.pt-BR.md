@@ -382,7 +382,7 @@ await userRepository.transaction(async tx => {
 
 ### Concorrência em `deleteManyReturning`
 
-O `deleteManyReturning` roda um `findMany` no `where` informado (pra capturar os registros que vai devolver) e depois re-aplica o mesmo `where` num `deleteMany`. Por causa desse formato em duas etapas, uma alteração concorrente entre o `findMany` e o `deleteMany` pode fazer os dois divergirem — os registros retornados e as linhas realmente deletadas não têm garantia de serem idênticos sob concorrência. Rode dentro de um `transaction()` num nível de isolamento mais alto se você precisar de consistência estrita.
+O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra capturar os registros e suas pks) e depois deleta por `inArray(pk, pks)` em vez de reaplicar o `where`. Isso garante que as linhas deletadas sejam sempre exatamente as que foram retornadas, mesmo que outra linha passe a bater (ou deixe de bater) com o `where` entre as duas etapas. Isso não torna a operação totalmente atômica, porém: uma linha ainda pode ser alterada ou deletada concorrentemente entre o `findMany` e o delete por pk, então os campos não-pk de um registro retornado podem estar desatualizados, ou sua pk pode não bater com nenhuma linha mais no momento do delete (o que deleta silenciosamente 0 linhas pra ela, sem lançar erro). Rode dentro de um `transaction()` num nível de isolamento mais alto se você precisar de consistência estrita.
 
 ## Limitações conhecidas
 

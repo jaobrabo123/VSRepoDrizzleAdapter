@@ -382,7 +382,7 @@ await userRepository.transaction(async tx => {
 
 ### Concurrency in `deleteManyReturning`
 
-`deleteManyReturning` runs a `findMany` on the given `where` (to capture the records it will return) and then re-applies the same `where` to a `deleteMany`. Because of this two-step shape, a concurrent change between the `findMany` and the `deleteMany` can make them diverge — the returned records and the rows actually deleted are not guaranteed to be identical under concurrency. Run inside a `transaction()` at a higher isolation level if you need strict consistency.
+`deleteManyReturning` runs a `findMany` on the given `where` first (to capture the records and their PKs) and then deletes by `inArray(pk, pks)` instead of re-applying `where`. This means the deleted rows are always exactly the ones returned, even if another row starts or stops matching `where` between the two steps. It does not make the operation fully atomic, though: a row can still be concurrently modified or deleted between the `findMany` and the delete by pk, so a returned record's non-pk fields may be stale, or its pk may no longer match any row by the time the delete runs (which silently deletes 0 rows for it, without erroring). Run inside a `transaction()` at a higher isolation level if you need strict consistency.
 
 ## Known limitations
 

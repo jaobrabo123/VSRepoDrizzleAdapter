@@ -657,8 +657,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     /**
      * Deletes all records matching `where` and returns them.
      *
-     * Runs a `findMany` first (to capture the records), then a `deleteMany` with the same
-     * `where`. Under concurrency, the returned records and the actually deleted rows may diverge.
+     * Runs a `findMany` on `where` first (to capture the records and their PKs), then deletes
+     * by `inArray(pk, pks)` instead of re-applying `where` — so the deleted rows are exactly the
+     * ones returned, even if another row starts/stops matching `where` between the two steps.
+     *
+     * This does not make the operation fully atomic: a row can still be concurrently modified or
+     * deleted between the `findMany` and the `delete` by pk, in which case the returned record's
+     * non-pk fields may be stale, or that pk may no longer match any row (silently deleting 0 for
+     * it). Run inside a `transaction()` at a higher isolation level if you need strict consistency.
      *
      * @publicApi
      */
