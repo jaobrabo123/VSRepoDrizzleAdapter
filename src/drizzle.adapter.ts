@@ -601,10 +601,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, options, true);
 
-                const columnsWithoudPk = readArg.columns && !readArg.columns[this.pk];
+                const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
 
                 // * Precisa injetar a pk para poder acessar no where lá em baixo
-                if (columnsWithoudPk) {
+                if (columnsWithoutPk) {
                     readArg.columns[this.pk] = true;
                 }
 
@@ -622,7 +622,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 await tx.delete(this.table).where(eq(pkColumn, current[this.pk]));
 
                 // * Retira a pk do retorno se o usuário não solicitou
-                if (columnsWithoudPk) {
+                if (columnsWithoutPk) {
                     delete current[this.pk];
                 }
 
@@ -667,10 +667,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, options);
 
-                const columnsWithoudPk = readArg.columns && !readArg.columns[this.pk];
+                const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
 
                 // * Precisa injetar a pk para poder acessar no condition lá em baixo
-                if (columnsWithoudPk) {
+                if (columnsWithoutPk) {
                     readArg.columns[this.pk] = true;
                 }
 
@@ -681,7 +681,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 for (const removed of allRemoved) {
                     pks.push(removed[this.pk]);
                     // * Retira a pk do retorno se o usuário não solicitou
-                    if (columnsWithoudPk) {
+                    if (columnsWithoutPk) {
                         delete removed[this.pk];
                     }
                 }

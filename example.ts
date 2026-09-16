@@ -67,10 +67,10 @@ newUser.address = {
     city: "tabes",
 } as Address;
 
-const userUpdated = await userRepository.save(newUser, { relations: { address: true } });
+const userUpdated = await userRepository.save(newUser, { select: { address: true } });
 console.log(userUpdated);
 
-const removed = await userRepository.deleteManyReturningByEmail(newUser.email, { select: { email: true } });
+const removed = await userRepository.deleteManyReturningByEmail(newUser.email, { select: { address: true } });
 console.log(removed);
 
 await userRepository
