@@ -1,5 +1,14 @@
 import { userTable } from "./dev/drizzle/schema.js";
-import { DeepPartial, DynamicMethod, MethodOptions, QueryMethod, VSRepository } from "vsrepo";
+import {
+    DeepPartial,
+    DynamicMethod,
+    MethodOptions,
+    QueryMethod,
+    VSRepository,
+    DbArg,
+    withDb,
+    VSLogLevel,
+} from "vsrepo";
 import { db, relations } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
@@ -19,6 +28,7 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
                 },
             }),
             pkName: "id",
+            logLevel: VSLogLevel.DEBUG,
         });
     }
 
@@ -29,10 +39,10 @@ class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof d
         modifying: true,
         spreadArgs: true,
     })
-    declare insertUser: (name: string, role: Role, email: string, passwordHash: string) => Promise<number>;
+    declare insertUser: (name: string, role: Role, email: string, passwordHash: string, db?: DbArg) => Promise<number>;
 
     @DynamicMethod()
-    declare deleteByEmail: (email: string, options?: MethodOptions<User>) => Promise<User>;
+    declare deleteManyReturningByEmail: (email: string, options?: MethodOptions<User>) => Promise<User[]>;
 
     @DynamicMethod()
     declare createManyReturning: (objs: DeepPartial<User>[], options?: MethodOptions<User>) => Promise<User[]>;
@@ -60,7 +70,8 @@ newUser.address = {
 const userUpdated = await userRepository.save(newUser, { relations: { address: true } });
 console.log(userUpdated);
 
-await userRepository.deleteByEmail(newUser.email, { select: { id: true } });
+const removed = await userRepository.deleteManyReturningByEmail(newUser.email, { select: { email: true } });
+console.log(removed);
 
 await userRepository
     .transaction(async tx => {
@@ -68,7 +79,7 @@ await userRepository
             [
                 {
                     name: "Pedro",
-                    email: "pedro@email.com",
+                    email: "pedro1@email.com",
                     role: Role.USER,
                     passwordHash: "2615376123",
                 },
@@ -82,6 +93,8 @@ await userRepository
             { db: tx, relations: { address: true, posts: true } },
         );
         console.log(created);
+
+        await userRepository.insertUser("Joao", Role.ADMIN, "joao@email.com", "asdyq8we", withDb(tx));
 
         tx.rollback();
     })

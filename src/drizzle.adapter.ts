@@ -1,4 +1,4 @@
-import { avg, count as countFn, eq, max as maxFn, min as minFn, sql, sum as sumFn, Table } from "drizzle-orm";
+import { avg, count as countFn, eq, inArray, max as maxFn, min as minFn, sql, sum as sumFn, Table } from "drizzle-orm";
 import {
     AdapterErrorCode,
     AdapterMethodOptions,
@@ -600,6 +600,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, options, true);
+
+                const columnsWithoudPk = readArg.columns && !readArg.columns[this.pk];
+
+                // * Precisa injetar a pk para poder acessar no where lá em baixo
+                if (columnsWithoudPk) {
+                    readArg.columns[this.pk] = true;
+                }
+
                 const current = await this.getQueryBuilder(tx).findFirst(readArg);
 
                 if (!current) {
@@ -610,8 +618,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     );
                 }
 
-                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
-                await (tx as any).delete(this.table).where(eq(pkColumn, (current as PlainObject)[this.pk]));
+                const pkColumn = (this.table as PlainObject)[this.pk];
+                await tx.delete(this.table).where(eq(pkColumn, current[this.pk]));
+
+                // * Retira a pk do retorno se o usuário não solicitou
+                if (columnsWithoudPk) {
+                    delete current[this.pk];
+                }
 
                 return current as T;
             });
@@ -653,12 +666,32 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, options);
-                const toReturn = (await this.getQueryBuilder(tx).findMany(readArg)) as T[];
 
-                const condition = parseSqlWhere(where, this.getSqlWhereContext(tx));
+                const columnsWithoudPk = readArg.columns && !readArg.columns[this.pk];
+
+                // * Precisa injetar a pk para poder acessar no condition lá em baixo
+                if (columnsWithoudPk) {
+                    readArg.columns[this.pk] = true;
+                }
+
+                const allRemoved = await this.getQueryBuilder(tx).findMany(readArg);
+
+                const pks: any[] = [];
+
+                for (const removed of allRemoved) {
+                    pks.push(removed[this.pk]);
+                    // * Retira a pk do retorno se o usuário não solicitou
+                    if (columnsWithoudPk) {
+                        delete removed[this.pk];
+                    }
+                }
+
+                const pkColumn = (this.table as PlainObject)[this.pk];
+                const condition = inArray(pkColumn, pks);
+
                 await (tx as any).delete(this.table).where(condition);
 
-                return toReturn;
+                return allRemoved as T[];
             });
         } catch (error) {
             throw mapDrizzleError(error, "deleteManyReturning", this.dialect);
