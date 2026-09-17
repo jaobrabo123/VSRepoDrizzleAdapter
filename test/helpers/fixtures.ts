@@ -66,7 +66,7 @@ export async function createPost(
         })
         .returning();
 
-    return { ...row!, category: null, tags: [] };
+    return { ...row!, category: null, tags: [] } as any;
 }
 
 export async function createTag(overrides: Partial<typeof tagTable.$inferInsert> = {}): Promise<Tag> {

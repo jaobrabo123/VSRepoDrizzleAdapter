@@ -116,6 +116,19 @@ async function resolveFkHereField(
     const pkValue = field[relation.relatedPk];
 
     if (pkValue === undefined) {
+        // Mirrors resolveOtoFkThereField: if this owner is already linked to a related
+        // row (`currentFkValue`), reuse/update it instead of inserting a duplicate that
+        // would leave the previously-linked row orphaned.
+        if (currentFkValue != undefined && !ownerIsBeingInsertedNow) {
+            if (relation.restriction === "set") {
+                const dataWithoutPk = omitKey(field, relation.relatedPk);
+                if (Object.keys(dataWithoutPk).length > 0) {
+                    await (tx as any).update(relation.table).set(dataWithoutPk).where(eq(pkColumn, currentFkValue));
+                }
+            }
+            return currentFkValue;
+        }
+
         const [created] = await (tx as any)
             .insert(relation.table)
             .values(field)
