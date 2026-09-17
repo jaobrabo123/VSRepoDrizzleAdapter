@@ -229,10 +229,7 @@ async function resolveOtmField(
             continue;
         }
 
-        const setData =
-            relation.restriction === "set"
-                ? { ...omitKey(item, relation.relatedPk), [relation.fkThere as string]: ownPkValue }
-                : { [relation.fkThere as string]: ownPkValue };
+        const setData = { ...omitKey(item, relation.relatedPk), [relation.fkThere as string]: ownPkValue };
 
         await (tx as any).update(relation.table).set(setData).where(eq(pkColumn, pkValue));
     }
@@ -326,11 +323,6 @@ async function resolveMtmField(
 
         if (existing.length === 0) {
             await (tx as any).insert(relation.table).values(item);
-        } else if (relation.restriction === "set") {
-            const dataWithoutPk = omitKey(item, relation.relatedPk);
-            if (Object.keys(dataWithoutPk).length > 0) {
-                await (tx as any).update(relation.table).set(dataWithoutPk).where(eq(pkColumn, pkValue));
-            }
         }
 
         await link(pkValue);
