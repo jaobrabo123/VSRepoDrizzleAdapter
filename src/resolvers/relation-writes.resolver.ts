@@ -90,6 +90,7 @@ async function resolveFkHereField(
     relation: ResolvedRelation,
     field: PlainObject | null,
     currentFkValue: unknown,
+    ownerIsBeingInsertedNow: boolean,
 ): Promise<unknown> {
     const relatedTable = relation.table as unknown as PlainObject;
     const pkColumn = relatedTable[relation.relatedPk];
@@ -105,7 +106,7 @@ async function resolveFkHereField(
         if (relation.mode === "mto") return null;
 
         // relation.mode === "oto"
-        if (relation.restriction === "set" && currentFkValue != undefined) {
+        if (relation.restriction === "set" && currentFkValue != undefined && !ownerIsBeingInsertedNow) {
             await (tx as any).delete(relation.table).where(eq(pkColumn, currentFkValue));
         }
 
@@ -146,6 +147,7 @@ export async function resolveFkHereFields(
     entries: [string, ResolvedRelation, unknown][],
     scalarFields: PlainObject,
     currentRow: PlainObject | undefined,
+    ownerIsBeingInsertedNow: boolean,
 ): Promise<void> {
     for (const [key, relation, value] of entries) {
         if (value !== null && typeof value !== "object") {
@@ -157,7 +159,13 @@ export async function resolveFkHereFields(
         }
 
         const currentFkValue = currentRow?.[relation.fkHere as string];
-        const resolved = await resolveFkHereField(tx, relation, value as PlainObject | null, currentFkValue);
+        const resolved = await resolveFkHereField(
+            tx,
+            relation,
+            value as PlainObject | null,
+            currentFkValue,
+            ownerIsBeingInsertedNow,
+        );
 
         scalarFields[relation.fkHere as string] = resolved;
     }
@@ -173,6 +181,7 @@ async function resolveOtmField(
     relation: ResolvedRelation,
     items: PlainObject[],
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const fkColumn = relatedTable[relation.fkThere as string];
@@ -228,7 +237,7 @@ async function resolveOtmField(
         await (tx as any).update(relation.table).set(setData).where(eq(pkColumn, pkValue));
     }
 
-    if (relation.restriction === "set") {
+    if (relation.restriction === "set" && !ownerJustInserted) {
         const condition =
             connectedIds.length > 0
                 ? and(eq(fkColumn, ownPkValue), notInArray(pkColumn, connectedIds))!
@@ -254,6 +263,7 @@ async function resolveMtmField(
     relation: ResolvedRelation,
     items: PlainObject[],
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const throughTable = relation.through as unknown as PlainObject;
@@ -326,7 +336,7 @@ async function resolveMtmField(
         await link(pkValue);
     }
 
-    if (relation.restriction === "set") {
+    if (relation.restriction === "set" && !ownerJustInserted) {
         const condition =
             connectedIds.length > 0
                 ? and(eq(throughHereColumn, ownPkValue), notInArray(throughThereColumn, connectedIds))!
@@ -344,6 +354,7 @@ async function resolveOtoFkThereField(
     relation: ResolvedRelation,
     field: PlainObject | null,
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const fkColumn = relatedTable[relation.fkThere as string];
@@ -357,14 +368,18 @@ async function resolveOtoFkThereField(
                 null,
             );
         }
-        if (relation.restriction === "set") {
-            await (tx as any).delete(relation.table).where(eq(fkColumn, ownPkValue));
-        } else {
-            await (tx as any)
-                .update(relation.table)
-                .set({ [fkColumn]: null })
-                .where(eq(fkColumn, ownPkValue));
+
+        if (!ownerJustInserted) {
+            if (relation.restriction === "set") {
+                await (tx as any).delete(relation.table).where(eq(fkColumn, ownPkValue));
+            } else {
+                await (tx as any)
+                    .update(relation.table)
+                    .set({ [fkColumn]: null })
+                    .where(eq(fkColumn, ownPkValue));
+            }
         }
+
         return;
     }
 
@@ -381,11 +396,9 @@ async function resolveOtoFkThereField(
     };
 
     if (pkValue === undefined) {
-        const [otoRel] = await (tx as any)
-            .select({ pk: pkColumn })
-            .from(relation.table)
-            .where(eq(fkColumn, ownPkValue))
-            .limit(1);
+        const [otoRel] = ownerJustInserted
+            ? []
+            : await (tx as any).select({ pk: pkColumn }).from(relation.table).where(eq(fkColumn, ownPkValue)).limit(1);
 
         if (!otoRel) {
             await (tx as any).insert(relation.table).values({ ...field, [relation.fkThere as string]: ownPkValue });
@@ -422,6 +435,7 @@ export async function resolveFkThereFields(
     tx: DrizzleTransactionLike,
     entries: [string, ResolvedRelation, unknown][],
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     for (const [key, relation, value] of entries) {
         if (relation.mode === "otm" || relation.mode === "mtm") {
@@ -434,9 +448,9 @@ export async function resolveFkThereFields(
             }
 
             if (relation.mode === "mtm") {
-                await resolveMtmField(tx, relation, value as PlainObject[], ownPkValue);
+                await resolveMtmField(tx, relation, value as PlainObject[], ownPkValue, ownerJustInserted);
             } else {
-                await resolveOtmField(tx, relation, value as PlainObject[], ownPkValue);
+                await resolveOtmField(tx, relation, value as PlainObject[], ownPkValue, ownerJustInserted);
             }
             continue;
         }
@@ -449,6 +463,6 @@ export async function resolveFkThereFields(
             );
         }
 
-        await resolveOtoFkThereField(tx, relation, value as PlainObject | null, ownPkValue);
+        await resolveOtoFkThereField(tx, relation, value as PlainObject | null, ownPkValue, ownerJustInserted);
     }
 }

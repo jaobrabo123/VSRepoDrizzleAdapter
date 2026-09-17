@@ -25,12 +25,12 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                 queryKey: "userTable",
                 relationsSchema: relations,
                 relations: {
-                    posts: { restriction: "add" },
+                    posts: { restriction: "set" },
                     address: { restriction: "set", nullable: true },
                 },
             }),
             pkName: "id",
-            logLevel: VSLogLevel.DEBUG,
+            logLevel: VSLogLevel.INFO,
         });
     }
 
@@ -59,8 +59,14 @@ const newUser = await userRepository.save(
         role: Role.USER,
         passwordHash: "2615376123",
         address: null,
+        posts: [
+            {
+                content: "Some backend post content...",
+                title: "backend post",
+            },
+        ],
     },
-    { relations: { address: true } },
+    { relations: { address: true, posts: true } },
 );
 console.log(newUser);
 
@@ -112,6 +118,7 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
                 relations: {
                     category: {
                         restriction: "set",
+                        nullable: true,
                     },
                     tags: {
                         restriction: "set",
@@ -122,7 +129,7 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
                 },
             }),
             pkName: "id",
-            logLevel: VSLogLevel.DEBUG,
+            logLevel: VSLogLevel.INFO,
         });
     }
 }
@@ -132,9 +139,7 @@ const postRepository = new PostRepository();
 await postRepository.transaction(async tx => {
     const post = await postRepository.save(
         {
-            category: {
-                name: "Backend",
-            },
+            category: null,
             content: "Some backend post content...",
             title: "backend post",
             user: {

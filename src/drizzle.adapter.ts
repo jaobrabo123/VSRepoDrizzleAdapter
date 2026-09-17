@@ -505,7 +505,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     false,
                 );
 
-                await resolveFkHereFields(tx, fkHereEntries, scalarFields, undefined);
+                await resolveFkHereFields(tx, fkHereEntries, scalarFields, undefined, true);
 
                 const [created] = await (tx as any)
                     .insert(this.table)
@@ -513,7 +513,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     .returning({ [this.pk]: (this.table as any)[this.pk] });
                 const ownPkValue = created[this.pk];
 
-                await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
+                await resolveFkThereFields(tx, fkThereEntries, ownPkValue, true);
 
                 const readArg = await this.resolveReadArgs(
                     { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
@@ -759,14 +759,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 true,
             );
 
-            await resolveFkHereFields(tx, fkHereEntries, scalarFields, resolved);
+            await resolveFkHereFields(tx, fkHereEntries, scalarFields, resolved, false);
 
             if (Object.keys(scalarFields).length > 0) {
                 const pkColumn = (this.table as unknown as PlainObject)[this.pk];
                 await (tx as any).update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
             }
 
-            await resolveFkThereFields(tx, fkThereEntries, ownPkValue);
+            await resolveFkThereFields(tx, fkThereEntries, ownPkValue, false);
 
             const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, options);
             const result = await this.getQueryBuilder(tx).findFirst(readArg);
