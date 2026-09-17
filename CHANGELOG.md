@@ -6,6 +6,32 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+- `mtm` (many-to-many) relation support: `AdapterRelation`/`ResolvedRelation`'s `mode` now accepts `"mtm"`, resolved via a join/pivot table (`through`/`throughFkHere`/`throughFkThere`) instead of a direct FK
+  - Writes (`create`/`update`/`upsert`/`save`): creates/upserts related rows and links them via `through`, deduplicating existing links; `restriction: "set"` cleanup only removes the join-table row, never the related entity itself
+  - When `relationsSchema` (Drizzle's `defineRelations()`) is configured, `mode: "mtm"` and its `through`/`throughFkHere`/`throughFkThere` are derived automatically from a `.through(...)` join, same as the existing derivation for `otm`/`mto`/`oto`
+  - `dev/drizzle/schema.ts`/`db.ts` gained a `tagTable`/`postTagTable` example (`postTable.tags`, many-to-many) demonstrating the new mode end-to-end
+
+### Documentation
+- READMEs (English/pt-BR): removed the "`mtm` not supported" notice, documented `mode: "mtm"` and the new `through`/`throughFkHere`/`throughFkThere` config, and updated the derivation/restriction/write-resolution tables accordingly
+
+---
+
+## [Unreleased] (Português)
+
+### Adicionado
+- Suporte à relation `mtm` (many-to-many): `mode` de `AdapterRelation`/`ResolvedRelation` agora aceita `"mtm"`, resolvida via uma tabela de junção/pivot (`through`/`throughFkHere`/`throughFkThere`) em vez de uma FK direta
+  - Escritas (`create`/`update`/`upsert`/`save`): cria/faz upsert das linhas relacionadas e as vincula via `through`, deduplicando vínculos já existentes; a limpeza do `restriction: "set"` só remove a linha da tabela de junção, nunca a entidade relacionada em si
+  - Com `relationsSchema` (`defineRelations()` do Drizzle) configurado, `mode: "mtm"` e seu `through`/`throughFkHere`/`throughFkThere` são derivados automaticamente de um join `.through(...)`, igual à derivação já existente pra `otm`/`mto`/`oto`
+  - `dev/drizzle/schema.ts`/`db.ts` ganharam um exemplo `tagTable`/`postTagTable` (`postTable.tags`, many-to-many) demonstrando o novo modo de ponta a ponta
+
+### Documentação
+- READMEs (inglês/pt-BR): removido o aviso de "`mtm` não suportado", documentado o `mode: "mtm"` e a nova config `through`/`throughFkHere`/`throughFkThere`, e atualizadas as tabelas de derivação/restriction/resolução de escrita de acordo
+
+---
+
 ## [1.0.0-alpha.1] - 2026-09-16
 
 ### Fixed

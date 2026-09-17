@@ -4,8 +4,8 @@
 // mesmos (o setup de um teste nunca depende do `create`/`save` estarem corretos).
 
 import { db } from "../../dev/drizzle/db.js";
-import { addressTable, categoryTable, postTable, userTable } from "../../dev/drizzle/schema.js";
-import { Address, Category, Post, User } from "../../dev/entities.js";
+import { addressTable, categoryTable, postTable, postTagTable, tagTable, userTable } from "../../dev/drizzle/schema.js";
+import { Address, Category, Post, Tag, User } from "../../dev/entities.js";
 import { Role } from "../../dev/enum/role.enum.js";
 
 export async function createUser(overrides: Partial<typeof userTable.$inferInsert> = {}): Promise<User> {
@@ -66,5 +66,21 @@ export async function createPost(
         })
         .returning();
 
-    return { ...row!, category: null };
+    return { ...row!, category: null, tags: [] };
+}
+
+export async function createTag(overrides: Partial<typeof tagTable.$inferInsert> = {}): Promise<Tag> {
+    const [row] = await db
+        .insert(tagTable)
+        .values({
+            name: `tag-${crypto.randomUUID()}`,
+            ...overrides,
+        })
+        .returning();
+
+    return row!;
+}
+
+export async function linkPostTag(postId: string, tagId: string): Promise<void> {
+    await db.insert(postTagTable).values({ postId, tagId });
 }

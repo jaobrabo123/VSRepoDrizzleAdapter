@@ -1,4 +1,4 @@
-import { userTable } from "./dev/drizzle/schema.js";
+import { postTable, postTagTable, userTable } from "./dev/drizzle/schema.js";
 import {
     DeepPartial,
     DynamicMethod,
@@ -13,9 +13,11 @@ import { db, relations } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "./src/types/drizzle-orm-types.type.js";
 import { Role } from "./dev/enum/role.enum.js";
-import { Address, User } from "./dev/entities.js";
+import { Address, Post, User } from "./dev/entities.js";
 
-class UserRepository extends VSRepository<User, string, DrizzleOrmTypes<typeof db>> {
+type MyOrmTypes = DrizzleOrmTypes<typeof db>;
+
+class UserRepository extends VSRepository<User, string, MyOrmTypes> {
     constructor() {
         super({
             adapter: new DrizzleAdapter(db, {
@@ -99,3 +101,72 @@ await userRepository
         tx.rollback();
     })
     .catch(console.log);
+
+class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
+    constructor() {
+        super({
+            adapter: new DrizzleAdapter(db, {
+                queryKey: "postTable",
+                table: postTable,
+                relationsSchema: relations,
+                relations: {
+                    category: {
+                        restriction: "set",
+                    },
+                    tags: {
+                        restriction: "set",
+                    },
+                    user: {
+                        restriction: "add",
+                    },
+                },
+            }),
+            pkName: "id",
+            logLevel: VSLogLevel.DEBUG,
+        });
+    }
+}
+
+const postRepository = new PostRepository();
+
+await postRepository.transaction(async tx => {
+    const post = await postRepository.save(
+        {
+            category: {
+                name: "Backend",
+            },
+            content: "Some backend post content...",
+            title: "backend post",
+            user: {
+                name: "Pedro",
+                email: "pedro1@email.com",
+                role: Role.USER,
+                passwordHash: "2615376123",
+            },
+            tags: [
+                {
+                    name: "backend",
+                },
+                {
+                    name: "nodejs",
+                },
+                {
+                    name: "nestjs",
+                },
+            ],
+        },
+        { db: tx, relations: { category: true, tags: true, user: true } },
+    );
+    console.log(post);
+
+    const postUpdated = await postRepository.patch(
+        post.id,
+        { tags: [{ id: post.tags[0]!.id }] },
+        { db: tx, relations: { category: true, tags: true, user: true } },
+    );
+    console.log(postUpdated);
+
+    await postRepository.remove(postUpdated.id, { db: tx });
+
+    tx.rollback();
+});

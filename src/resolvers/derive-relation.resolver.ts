@@ -1,12 +1,27 @@
-import { is, Table, TablesRelationalConfig } from "drizzle-orm";
+import { Column, is, Table, TablesRelationalConfig } from "drizzle-orm";
 
 /** The subset of `AdapterRelation` that can be read straight off a Drizzle relation. */
 export type DerivedRelation = {
     table: Table;
-    mode: "otm" | "mto" | "oto";
+    mode: "otm" | "mto" | "oto" | "mtm";
     fkHere?: string;
     fkThere?: string;
+    through?: Table;
+    throughFkHere?: string;
+    throughFkThere?: string;
 };
+
+/**
+ * Reads the physical column name off one side of a `through()` join —
+ * `RelationsBuilderJunctionColumn._.column` is typed as `Column | SQLWrapper
+ * | SQL.Aliased | SQL` (Drizzle allows non-column expressions there), so
+ * this mirrors the same `is(..., Column)` guard Drizzle's own
+ * `relationToSQL` uses internally. Returns `undefined` for anything that
+ * isn't a plain column — those can't be derived, same as a composite FK.
+ */
+function throughColumnName(joinColumn: { _: { column: unknown } }): string | undefined {
+    return is(joinColumn._.column, Column) ? joinColumn._.column.name : undefined;
+}
 
 /**
  * Derives `table`/`mode`/`fkHere`/`fkThere` for one relation field straight
@@ -16,10 +31,14 @@ export type DerivedRelation = {
  * derivation gets wrong for that relation.
  *
  * Derivation rules, per `relationType`:
- *  - `"many"` -> always `mode: "otm"`; the FK lives on the related ("many")
- *    table, i.e. `fkThere` — Drizzle's own join columns already say so
- *    (`targetColumns`, since a "many" relation's `sourceColumns` are the
- *    parent-side key, usually the PK).
+ *  - a `"many"` relation declared with `.through(...)` on both its `from`
+ *    and `to` join columns -> `mode: "mtm"`; `through`/`throughFkHere`/
+ *    `throughFkThere` come straight off Drizzle's own `through`/
+ *    `throughTable` metadata (see `throughColumnName`).
+ *  - `"many"` without `through` -> always `mode: "otm"`; the FK lives on
+ *    the related ("many") table, i.e. `fkThere` — Drizzle's own join
+ *    columns already say so (`targetColumns`, since a "many" relation's
+ *    `sourceColumns` are the parent-side key, usually the PK).
  *  - `"one"` -> `mode` is `"oto"` or `"mto"` depending on which side the FK
  *    physically lives on, told apart by which of the two join columns is a
  *    primary key (the referenced side) rather than the referencing FK:
@@ -39,14 +58,17 @@ export type DerivedRelation = {
  * nullable column the app never actually meant to expose as "deletable via
  * `null`") would mean silent, implicit data loss. It always has to be set
  * by hand in the constructor's `relations` (defaults to `false`/non-nullable
- * when omitted, same as without `relationsSchema`).
+ * when omitted, same as without `relationsSchema`). This never applies to
+ * `mtm` anyway, since it's always to-many.
  *
  * Returns `undefined` when the relation can't be derived — not present in
- * `relationsSchema`, a composite-column join, a many-to-many `through`
- * relation, or the "neither side is a PK" case above. `AdapterRelation` has
- * no shape for composite/`through` relations either way, so those always
- * need a fully manual entry (`table`/`mode`/`fkHere`/`fkThere` supplied by
- * hand) regardless of `relationsSchema`.
+ * `relationsSchema`, a composite-column join (`sourceColumns`/
+ * `targetColumns`, or — for `mtm` — `through.source`/`through.target`, with
+ * more than one column), a `through()` join column pointing at something
+ * other than a plain column (see `throughColumnName`), or the "neither side
+ * is a PK" case above. `AdapterRelation` has no shape for composite
+ * relations either way, so those always need a fully manual entry supplied
+ * by hand regardless of `relationsSchema`.
  */
 export function deriveRelation(
     relationsSchema: TablesRelationalConfig,
@@ -54,14 +76,35 @@ export function deriveRelation(
     key: string,
 ): DerivedRelation | undefined {
     const relation = relationsSchema[tableKey]?.relations[key];
-    if (!relation || relation.through) return undefined;
+    if (!relation) return undefined;
+
+    const targetTable = relationsSchema[relation.targetTableName]?.table;
+    if (!is(targetTable, Table)) return undefined;
+
+    if (relation.through) {
+        // A `through()` relation is always declared as `relationType: "many"` on
+        // Drizzle's side (a many-to-many has no "one" end), so this is really just
+        // a defensive check — kept for symmetry with the non-`through` branch below.
+        if (relation.relationType !== "many") return undefined;
+
+        const [throughSource, ...restThroughSource] = relation.through.source;
+        const [throughTarget, ...restThroughTarget] = relation.through.target;
+        if (!throughSource || !throughTarget || restThroughSource.length > 0 || restThroughTarget.length > 0) {
+            return undefined;
+        }
+
+        if (!is(relation.throughTable, Table)) return undefined;
+
+        const throughFkHere = throughColumnName(throughSource);
+        const throughFkThere = throughColumnName(throughTarget);
+        if (throughFkHere === undefined || throughFkThere === undefined) return undefined;
+
+        return { table: targetTable, mode: "mtm", through: relation.throughTable, throughFkHere, throughFkThere };
+    }
 
     const [sourceColumn, ...restSource] = relation.sourceColumns;
     const [targetColumn, ...restTarget] = relation.targetColumns;
     if (!sourceColumn || !targetColumn || restSource.length > 0 || restTarget.length > 0) return undefined;
-
-    const targetTable = relationsSchema[relation.targetTableName]?.table;
-    if (!is(targetTable, Table)) return undefined;
 
     if (relation.relationType === "many") {
         return { table: targetTable, mode: "otm", fkThere: targetColumn.name };

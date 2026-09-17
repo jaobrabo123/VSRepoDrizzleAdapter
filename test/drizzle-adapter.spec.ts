@@ -13,8 +13,8 @@ import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { Role } from "../dev/enum/role.enum.js";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import cleanDbHelper from "./helpers/clean-db.helper.js";
-import { createAddress, createCategory, createPost, createUser } from "./helpers/fixtures.js";
-import { addressTable, categoryTable, postTable, userTable } from "../dev/drizzle/schema.js";
+import { createAddress, createCategory, createPost, createTag, createUser, linkPostTag } from "./helpers/fixtures.js";
+import { addressTable, categoryTable, postTable, postTagTable, tagTable, userTable } from "../dev/drizzle/schema.js";
 import { Address, Post, User } from "../dev/entities.js";
 import { db, relations } from "../dev/drizzle/db.js";
 
@@ -513,6 +513,147 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             ).rejects.toThrow(VSRepoAdapterError);
 
             expect(await userAdapter.count({})).toBe(0);
+        });
+    });
+
+    describe("relação 'mtm' (Post <-> Tag, através de PostTag)", () => {
+        let postAdapter: DrizzleAdapter<Post>;
+
+        beforeEach(() => {
+            postAdapter = new DrizzleAdapter<Post>(db, {
+                queryKey: "postTable",
+                table: postTable,
+                relations: {
+                    tags: {
+                        mode: "mtm",
+                        restriction: "set",
+                        table: tagTable,
+                        through: postTagTable,
+                        throughFkHere: "postId",
+                        throughFkThere: "tagId",
+                    },
+                },
+            });
+        });
+
+        it("create com Tags aninhadas (sem pk) cria o Post, as Tags e os vínculos em PostTag", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+
+            const result = await postAdapter.create(
+                {
+                    title: "Post 1",
+                    content: "...",
+                    userId: user.id,
+                    tags: [{ name: "ts" }, { name: "node" }],
+                },
+                { relations: { tags: true } },
+            );
+
+            expect(result.tags.map(t => t.name).sort()).toEqual(["node", "ts"]);
+
+            const links = await db.select().from(postTagTable).where(eq(postTagTable.postId, result.id));
+            expect(links).toHaveLength(2);
+
+            const tags = await db.select().from(tagTable);
+            expect(tags).toHaveLength(2);
+        });
+
+        it("update conectando uma Tag já existente (com pk) apenas vincula via PostTag, sem duplicar a Tag", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            const post = await createPost(user.id, { title: "Post 1" });
+            const tag = await createTag({ name: "ts" });
+
+            await postAdapter.update({ id: post.id }, { tags: [{ id: tag.id, name: "ts" }] });
+
+            const links = await db.select().from(postTagTable).where(eq(postTagTable.postId, post.id));
+            expect(links).toEqual([{ postId: post.id, tagId: tag.id }]);
+
+            const tags = await db.select().from(tagTable);
+            expect(tags).toHaveLength(1); // não duplicou
+        });
+
+        it("update reenviando uma Tag já vinculada não duplica a linha em PostTag", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            const post = await createPost(user.id, { title: "Post 1" });
+            const tag = await createTag({ name: "ts" });
+            await linkPostTag(post.id, tag.id);
+
+            await postAdapter.update({ id: post.id }, { tags: [{ id: tag.id, name: "ts" }] });
+
+            const links = await db.select().from(postTagTable).where(eq(postTagTable.postId, post.id));
+            expect(links).toHaveLength(1);
+        });
+
+        it("update com restriction 'set' remove o vínculo com Tags fora do payload, mas NÃO apaga a Tag em si", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            const post = await createPost(user.id, { title: "Post 1" });
+            const tagA = await createTag({ name: "a" });
+            const tagB = await createTag({ name: "b" });
+            await linkPostTag(post.id, tagA.id);
+            await linkPostTag(post.id, tagB.id);
+
+            await postAdapter.update({ id: post.id }, { tags: [{ id: tagA.id, name: "a" }] });
+
+            const links = await db.select().from(postTagTable).where(eq(postTagTable.postId, post.id));
+            expect(links.map(l => l.tagId)).toEqual([tagA.id]);
+
+            // tagB continua existindo — 'set' desvincula, não apaga a entidade relacionada
+            // (diferença central em relação ao 'set' de uma 'otm', que apaga a linha).
+            const tags = await db.select().from(tagTable);
+            expect(tags.map(t => t.id).sort()).toEqual([tagA.id, tagB.id].sort());
+        });
+
+        it("uma Tag compartilhada entre dois Posts não é desvinculada do outro Post quando um deles usa 'set'", async () => {
+            const user = await createUser({ email: "ana@example.com" });
+            const postA = await createPost(user.id, { title: "Post A" });
+            const postB = await createPost(user.id, { title: "Post B" });
+            const tag = await createTag({ name: "shared" });
+            await linkPostTag(postA.id, tag.id);
+            await linkPostTag(postB.id, tag.id);
+
+            await postAdapter.update({ id: postA.id }, { tags: [] });
+
+            const linksA = await db.select().from(postTagTable).where(eq(postTagTable.postId, postA.id));
+            expect(linksA).toHaveLength(0);
+
+            const linksB = await db.select().from(postTagTable).where(eq(postTagTable.postId, postB.id));
+            expect(linksB).toHaveLength(1);
+
+            const tags = await db.select().from(tagTable);
+            expect(tags).toHaveLength(1); // a Tag em si nunca foi apagada
+        });
+
+        describe("restriction 'add'", () => {
+            let addPostAdapter: DrizzleAdapter<Post>;
+
+            beforeEach(() => {
+                addPostAdapter = new DrizzleAdapter<Post>(db, {
+                    queryKey: "postTable",
+                    table: postTable,
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "add",
+                            table: tagTable,
+                            through: postTagTable,
+                            throughFkHere: "postId",
+                            throughFkThere: "tagId",
+                        },
+                    },
+                });
+            });
+
+            it("apenas ADICIONA vínculos, sem remover os já existentes", async () => {
+                const user = await createUser({ email: "ana@example.com" });
+                const post = await createPost(user.id, { title: "Post 1" });
+                const tagA = await createTag({ name: "a" });
+                await linkPostTag(post.id, tagA.id);
+
+                await addPostAdapter.update({ id: post.id }, { tags: [{ name: "b" }] });
+
+                const links = await db.select().from(postTagTable).where(eq(postTagTable.postId, post.id));
+                expect(links).toHaveLength(2);
+            });
         });
     });
 

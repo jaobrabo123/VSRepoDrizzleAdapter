@@ -29,6 +29,7 @@
     - [`mode`](#mode)
     - [`restriction`](#restriction)
     - [`fkHere`, `fkThere` and `nullable`](#fkhere-fkthere-and-nullable)
+    - [`through`, `throughFkHere` and `throughFkThere`](#through-throughfkhere-and-throughfkthere)
     - [How each write method resolves relations](#how-each-write-method-resolves-relations)
   - [`relations` in method options (read)](#relations-in-method-options-read)
 - [`merge`](#merge)
@@ -187,20 +188,21 @@ Derivation, per relation:
 | Drizzle relation | Derived `mode` | Derived FK |
 | --- | --- | --- |
 | `relationType: "many"` | `"otm"` | `fkThere` — the FK column on the related table |
+| `relationType: "many"` declared with `.through(...)` on both `from`/`to` join columns | `"mtm"` | `through`/`throughFkHere`/`throughFkThere` — the join table and its two FK columns |
 | `relationType: "one"`, FK column on the related table (e.g. an inferred/reversed 1-1, like `userTable.address`) | `"oto"` | `fkThere` |
 | `relationType: "one"`, FK column on this table, unique (1-1, e.g. `addressTable.user`) | `"oto"` | `fkHere` |
 | `relationType: "one"`, FK column on this table, not unique (e.g. `postTable.user`) | `"mto"` | `fkHere` |
 
-**`nullable` is never derived** — it's always `false` (not nullable) unless you set it explicitly in `relations`, exactly like without `relationsSchema`.
+**`nullable` is never derived** — it's always `false` (not nullable) unless you set it explicitly in `relations`, exactly like without `relationsSchema`. This never applies to `otm`/`mtm` anyway, since both are always to-many.
 
 Any other field you spell out explicitly in `relations` always overrides the derived value for that field.
 
 `restriction` is **never** derived either — there's no schema equivalent for it, it's purely a write-behavior choice (see below) and always has to be given by hand.
 
-Derivation is skipped for `mode`/`table`/`fkHere`/`fkThere` — the field falls back to needing a fully manual entry, same as without `relationsSchema` — when:
+Derivation is skipped for `mode`/`table`/`fkHere`/`fkThere`/`through`/`throughFkHere`/`throughFkThere` — the field falls back to needing a fully manual entry, same as without `relationsSchema` — when:
 - the field isn't a relation on this table in `relationsSchema` (typo, or genuinely not there);
-- the relation joins on more than one column (a composite FK);
-- the relation goes through a junction table (Drizzle's `through`, for many-to-many) — `AdapterRelation` has no shape for many-to-many either way, see "`mode`" below.
+- the relation joins on more than one column (a composite FK, or — for `mtm` — a composite join into the pivot table);
+- a `.through(...)` join column points at something other than a plain column (a SQL expression).
 
 `relationsSchema` is entirely optional: everything above also works — you just do it all by hand — with the fully manual `relations` config described next.
 
@@ -215,12 +217,20 @@ relations: {
     posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
     address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId", nullable: true },
     author: { mode: "mto", restriction: "set", table: userTable, fkHere: "authorId" },
+    tags: {
+        mode: "mtm",
+        restriction: "set",
+        table: tagTable,
+        through: postTagTable,
+        throughFkHere: "postId",
+        throughFkThere: "tagId",
+    },
 }
 ```
 
-(With `relationsSchema` configured, `mode`/`table`/`fkHere`/`fkThere` above are usually derived automatically — see "`relationsSchema`" above; `restriction` is always required, and so is `nullable` whenever you need `null` to mean something — it's never derived, see above.)
+(With `relationsSchema` configured, `mode`/`table`/`fkHere`/`fkThere`/`through`/`throughFkHere`/`throughFkThere` above are usually derived automatically — see "`relationsSchema`" above; `restriction` is always required, and so is `nullable` whenever you need `null` to mean something — it's never derived, see above.)
 
-Without `relations`, every field — including relation fields — is passed straight through to the Drizzle `insert`/`update` `values`/`set`, as-is. That works for scalar fields, but Drizzle has no nested-write API, so the adapter resolves relation writes imperatively: it splits the payload, inserts/updates related rows in the correct order, and wires FK values. If your entity has relations you'll usually want to configure them.
+Without `relations`, every field — including relation fields — is passed straight through to the Drizzle `insert`/`update` `values`/`set`, as-is. That works for scalar fields, but Drizzle has no nested-write API, so the adapter resolves relation writes imperatively: it splits the payload, inserts/updates related rows in the correct order, and wires FK values (or, for `mtm`, join-table rows). If your entity has relations you'll usually want to configure them.
 
 #### `mode`
 
@@ -231,15 +241,16 @@ Cardinality of the relation, from the point of view of the entity that owns the 
 | `oto` | one-to-one | a single object, or `null` |
 | `mto` | many-to-one | a single object, or `null` |
 | `otm` | one-to-many | an array of objects |
+| `mtm` | many-to-many, through a join table | an array of objects |
 
-> `mtm` (many-to-many) is **not** supported by this adapter. If you need many-to-many, model it as two `otm` relations through a join table.
+`mtm` has no FK on either table — the link lives on a separate join/pivot table you own (`through`), so it uses `through`/`throughFkHere`/`throughFkThere` instead of `fkHere`/`fkThere` (see below).
 
 #### `restriction`
 
 Controls how `save`/`update`/`upsert` handle relation items that already exist (matched by primary key) and, for to-many relations, items that were **not** included in the payload:
 
 - **`"add"`** — only creates/updates the items you send. Existing items that aren't in the payload are left untouched.
-- **`"set"`** — same as `"add"`, but also removes what wasn't sent: for `otm` it deletes the items missing from the array; for `oto`/`mto` with `nullable: true`, sending `null` deletes/disconnects the relation (see below).
+- **`"set"`** — same as `"add"`, but also removes what wasn't sent: for `otm` it deletes the items missing from the array; for `oto`/`mto` with `nullable: true`, sending `null` deletes/disconnects the relation (see below); for `mtm` it deletes the missing **join-table rows only** — the related entity itself is never deleted, since a many-to-many relation never owns the related row the way an `otm` relation does.
 
 #### `fkHere`, `fkThere` and `nullable`
 
@@ -247,22 +258,68 @@ Unlike the Prisma adapter (which uses a `pk` field to identify related records v
 
 - **`fkHere`** — the foreign key column **on this table** that points to the related table. Used for `mto` and `oto` (when the FK lives on the owning side). The adapter reads/writes this column to link/unlink the relation.
 - **`fkThere`** — the foreign key column **on the related table** that points back to this table. Used for `otm` and `oto` (when the FK lives on the related side). The adapter sets this column on the related rows to link them.
-- **`nullable`** — relevant for `oto`/`mto` to-one relations. When `true`, sending `null` for the field resolves to setting the FK to `null` or deleting the related row (for `oto` with `restriction: "set"`). When omitted/`false`, sending `null` for a to-one relation throws a `VSRepoAdapterError` (code `INVALID_DATA`).
+- **`nullable`** — relevant for `oto`/`mto` to-one relations. When `true`, sending `null` for the field resolves to setting the FK to `null` or deleting the related row (for `oto` with `restriction: "set"`). When omitted/`false`, sending `null` for a to-one relation throws a `VSRepoAdapterError` (code `INVALID_DATA`). Not applicable to `otm`/`mtm`.
 
-Each `mode` requires exactly one of `fkHere`/`fkThere`:
+Each `mode` requires exactly one of `fkHere`/`fkThere` — except `mtm`, which uses `through`/`throughFkHere`/`throughFkThere` instead (see below) and doesn't accept `fkHere`/`fkThere` at all:
 
 | `mode` | Required FK | Why |
 | --- | --- | --- |
 | `otm` | `fkThere` | The FK is on the "many" side (the related table) |
 | `mto` | `fkHere` | The FK is on the owning table |
 | `oto` | `fkHere` **or** `fkThere` | Depends on which side holds the FK |
+| `mtm` | `through` + `throughFkHere` + `throughFkThere` | There's no FK on either table — the link lives on a separate join table |
+
+#### `through`, `throughFkHere` and `throughFkThere`
+
+`mtm`-only. A many-to-many has no direct FK on either side — the link is a row on a join/pivot table you own, so these three replace `fkHere`/`fkThere` for that mode:
+
+- **`through`** — the Drizzle `Table` for the join table (e.g. `postTagTable`, with `postId`/`tagId` columns and typically a composite primary key on the two).
+- **`throughFkHere`** — the column on `through` that references **this** table's pk (e.g. `postId`, from `postTable`'s perspective).
+- **`throughFkThere`** — the column on `through` that references the **related** table's pk (e.g. `tagId`).
+
+```typescript
+tags: {
+    mode: "mtm",
+    restriction: "set",
+    table: tagTable,
+    through: postTagTable,
+    throughFkHere: "postId",
+    throughFkThere: "tagId",
+}
+```
+
+Writes: an item without a pk is `insert`ed into `table`, then linked; an item with a pk that doesn't exist yet is `insert`ed (with `restriction: "set"`, an item with a pk that *does* exist is also updated with the rest of its fields, same as `otm`); either way, a join row is inserted only if one doesn't already exist for that pair (so resending an already-linked item is a no-op, not a duplicate row). With `restriction: "set"`, any join row for this parent that wasn't part of the payload is deleted — again, only the *join* row, never the related entity in `table`.
+
+If you're on Drizzle's `defineRelations()` with a `.through(...)` join (see below), all three fields above are derived automatically from `relationsSchema` — you typically only need `restriction`.
+
+With `relationsSchema` configured this way:
+
+```typescript
+export const relations = defineRelations(schema, r => ({
+    postTable: {
+        tags: r.many.tagTable({
+            from: r.postTable.id.through(r.postTagTable.postId),
+            to: r.tagTable.id.through(r.postTagTable.tagId),
+        }),
+    },
+    // ...
+}));
+```
+
+the constructor config collapses to just:
+
+```typescript
+relations: {
+    tags: { restriction: "set" },
+}
+```
 
 #### How each write method resolves relations
 
 | Method | Relations |
 | --- | --- |
-| `create` | Resolves `fkHere` relations first (creates/upserts related rows, sets the FK on the main row before inserting), then inserts the main row, then resolves `fkThere` relations (creates/upserts related rows with the FK pointing to the newly created row) |
-| `update` / `upsert` (update half) / `save` (upsert branch) | Full resolution: creates/upserts/deletes related rows per `mode`/`restriction`, updating FKs as needed |
+| `create` | Resolves `fkHere` relations first (creates/upserts related rows, sets the FK on the main row before inserting), then inserts the main row, then resolves `fkThere`/`mtm` relations (creates/upserts related rows, then — for `mtm` — links them via `through`, with the FK/join pointing to the newly created row) |
+| `update` / `upsert` (update half) / `save` (upsert branch) | Full resolution: creates/upserts/deletes related rows (or, for `mtm`, join-table rows) per `mode`/`restriction`, updating FKs as needed |
 | `createMany` / `createManyReturning` / `updateMany` / `updateManyReturning` | Not supported — throws a `VSRepoAdapterError` naming the offending field if the payload contains a configured relation |
 
 ### `relations` in method options (read)
@@ -389,11 +446,10 @@ await userRepository.transaction(async tx => {
 | Limitation | Details |
 | --- | --- |
 | No `distinct` support | Drizzle's relational query API (`db.query[key].findMany`) has no `distinct` option — passing `distinct` to `findMany` throws `NOT_SUPPORTED`. |
-| No `mtm` mode | Many-to-many relations are not supported. Model them as two `otm` relations through a join table. |
 | No `timeoutMs` in transactions | Drizzle's transaction API doesn't expose a timeout parameter — passing `timeoutMs` throws `NOT_SUPPORTED`. |
 | `_every`/`_none` quantifier filters | Supported, but trigger an extra round-trip: a SQL prefetch query finds matching PKs, then the relational query API filters by those PKs. |
 | `select` with `true`-marked relation fields | A relation field marked `true` in `select` is only routed to `with` if the adapter can tell it's a relation — via `relationsSchema` (any depth) or the constructor's `relations` (first level only) — otherwise it's treated as a scalar column and the query fails. Without `relationsSchema`, nested relations marked `true` inside a `select` object are always treated as columns (spell out a field or use the `relations` option). |
-| `relationsSchema` derivation doesn't cover composite FKs or many-to-many | A relation that joins on more than one column, or goes through a junction table (Drizzle's `through`), falls back to needing a fully manual `relations` entry — same as without `relationsSchema`. |
+| `relationsSchema` derivation doesn't cover composite FKs/joins | A relation that joins on more than one column — including, for `mtm`, a composite join into the pivot table — falls back to needing a fully manual `relations` entry — same as without `relationsSchema`. |
 | MySQL not supported | Only `postgresql`, `sqlite`, and `cockroach` are supported. A `table` built with `mysqlTable()` throws `NOT_SUPPORTED` at construction time (dialect can't be auto-detected, and `dialect` has no `"mysql"` value to pass either). |
 
 ## Requirements

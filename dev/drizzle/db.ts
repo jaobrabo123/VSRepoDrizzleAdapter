@@ -19,6 +19,10 @@ export const relations = defineRelations(schema, r => ({
             from: r.postTable.userId,
             to: r.userTable.id,
         }),
+        tags: r.many.tagTable({
+            from: r.postTable.id.through(r.postTagTable.postId),
+            to: r.tagTable.id.through(r.postTagTable.tagId),
+        }),
     },
     categoryTable: {
         posts: r.many.postTable(),
@@ -27,6 +31,9 @@ export const relations = defineRelations(schema, r => ({
         address: r.one.addressTable(),
         posts: r.many.postTable(),
     },
+    tagTable: {
+        posts: r.many.postTable(),
+    },
 }));
 
-export const db = drizzle(process.env.DATABASE_URL!, { relations, logger: false });
+export const db = drizzle(process.env.DATABASE_URL!, { relations, logger: true });

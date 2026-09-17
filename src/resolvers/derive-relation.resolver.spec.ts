@@ -1,25 +1,38 @@
 import { defineRelations } from "drizzle-orm";
 import { pgTable, uuid, varchar } from "drizzle-orm/pg-core";
-import { addressTable, categoryTable, postTable, userTable } from "../../dev/drizzle/schema.js";
+import { addressTable, categoryTable, postTable, postTagTable, tagTable, userTable } from "../../dev/drizzle/schema.js";
 import { deriveRelation } from "./derive-relation.resolver.js";
 
 // Mesmo shape de dev/drizzle/db.ts, sem precisar de uma conexão real.
-const relationsSchema = defineRelations({ userTable, postTable, addressTable, categoryTable }, r => ({
-    addressTable: {
-        user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
-    },
-    postTable: {
-        category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
-        user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
-    },
-    categoryTable: {
-        posts: r.many.postTable(),
-    },
-    userTable: {
-        address: r.one.addressTable(),
-        posts: r.many.postTable(),
-    },
-}));
+const relationsSchema = defineRelations(
+    { userTable, postTable, addressTable, categoryTable, tagTable, postTagTable },
+    r => ({
+        addressTable: {
+            user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
+        },
+        postTable: {
+            category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
+            user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
+            tags: r.many.tagTable({
+                from: r.postTable.id.through(r.postTagTable.postId),
+                to: r.tagTable.id.through(r.postTagTable.tagId),
+            }),
+        },
+        categoryTable: {
+            posts: r.many.postTable(),
+        },
+        userTable: {
+            address: r.one.addressTable(),
+            posts: r.many.postTable(),
+        },
+        tagTable: {
+            posts: r.many.postTable({
+                from: r.tagTable.id.through(r.postTagTable.tagId),
+                to: r.postTable.id.through(r.postTagTable.postId),
+            }),
+        },
+    }),
+);
 
 describe("deriveRelation", () => {
     it("should be defined", () => {
@@ -110,5 +123,53 @@ describe("deriveRelation", () => {
         }));
 
         expect(deriveRelation(compositeSchema, "memberTable", "org")).toBeUndefined();
+    });
+
+    it("relation 'many' com '.through(...)' (postTable.tags) -> mode 'mtm' + through/throughFkHere/throughFkThere", () => {
+        const derived = deriveRelation(relationsSchema, "postTable", "tags");
+
+        expect(derived).toEqual({
+            table: tagTable,
+            mode: "mtm",
+            through: postTagTable,
+            throughFkHere: "postId",
+            throughFkThere: "tagId",
+        });
+    });
+
+    it("relation 'mtm' no lado inverso (tagTable.posts) -> mesma tabela pivot, colunas invertidas", () => {
+        const derived = deriveRelation(relationsSchema, "tagTable", "posts");
+
+        expect(derived).toEqual({
+            table: postTable,
+            mode: "mtm",
+            through: postTagTable,
+            throughFkHere: "tagId",
+            throughFkThere: "postId",
+        });
+    });
+
+    it("retorna 'undefined' pra 'through' composto (mais de uma coluna em through.source/through.target)", () => {
+        const memberTable = pgTable("member2", { id: uuid().primaryKey() });
+        const labelTable = pgTable("label2", { id: uuid().primaryKey() });
+        const memberLabelTable = pgTable("member_label2", {
+            memberIdA: uuid(),
+            memberIdB: uuid(),
+            labelId: uuid(),
+        });
+
+        const compositeThroughSchema = defineRelations({ memberTable, labelTable, memberLabelTable }, r => ({
+            memberTable: {
+                labels: r.many.labelTable({
+                    from: [
+                        r.memberTable.id.through(r.memberLabelTable.memberIdA),
+                        r.memberTable.id.through(r.memberLabelTable.memberIdB),
+                    ],
+                    to: r.labelTable.id.through(r.memberLabelTable.labelId),
+                }),
+            },
+        }));
+
+        expect(deriveRelation(compositeThroughSchema, "memberTable", "labels")).toBeUndefined();
     });
 });
