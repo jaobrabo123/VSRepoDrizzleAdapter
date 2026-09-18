@@ -12,11 +12,14 @@
  *  - Direct value / field operators / `between` / `not` / string filters —
  *    same semantics, built with the matching drizzle-orm operator function
  *    instead of being passed through as a plain object.
- *  - `_some` / `_every` / `_none` (to-many relation, `otm` only): all three
- *    translated into `EXISTS`/`NOT EXISTS` correlated subqueries against the
- *    related table (`_every` via the classic "no row fails the filter" SQL
- *    trick — `NOT EXISTS (... WHERE join AND NOT filter)`, vacuously true
- *    for a parent with no related rows, matching Prisma's `every` semantics).
+ *  - `_some` / `_every` / `_none` (to-many relation, `otm` and `mtm`): all
+ *    three translated into `EXISTS`/`NOT EXISTS` correlated subqueries
+ *    against the related table (`_every` via the classic "no row fails the
+ *    filter" SQL trick — `NOT EXISTS (... WHERE join AND NOT filter)`,
+ *    vacuously true for a parent with no related rows, matching Prisma's
+ *    `every` semantics). `otm` joins on the related table's FK (`fkThere`);
+ *    `mtm` goes through the `through` join table, via a correlated
+ *    `EXISTS (SELECT 1 FROM through WHERE ... both FKs ...)` link.
  *    Unlike `where.parser.ts` (the relational-API parser), which can't
  *    express `_every`/`_none` at all, this parser supports all three
  *    uniformly — `DrizzleAdapter` uses that to give `findOne`/`findMany`/etc.
@@ -184,9 +187,28 @@ function buildJoinCondition(relation: ResolvedRelation, ctx: SqlWhereContext): S
     return eq(relatedColumns[relation.fkThere as string], hereColumns[ctx.pk]);
 }
 
-function buildExists(relation: ResolvedRelation, condition: SQL, ctx: SqlWhereContext): SQL {
-    const subquery = (ctx.db.select({ one: sql`1` }) as any).from(relation.table).where(condition);
+function buildExists(table: Table, condition: SQL, ctx: SqlWhereContext): SQL {
+    const subquery = (ctx.db.select({ one: sql`1` }) as any).from(table).where(condition);
     return exists(subquery);
+}
+
+/**
+ * Builds the correlated-exists link between this table (`ctx.table`) and an
+ * `mtm` relation's related table, going through the join `through` table —
+ * there's no FK on either side of a many-to-many, only join rows. The result
+ * is meant to sit inside the related table's `EXISTS` subquery as its "join":
+ * `EXISTS (SELECT 1 FROM through WHERE through.fkHere = <ctx.table pk> AND
+ * through.fkThere = <related table pk>)`, correlating to the related row's
+ * pk from the enclosing subquery and to `ctx.table`'s pk from the outermost
+ * query.
+ */
+function buildMtmLinkCondition(relation: ResolvedRelation, ctx: SqlWhereContext): SQL {
+    const through = relation.through as unknown as PlainObject;
+    const condition = and(
+        eq(through[relation.throughFkHere as string], (ctx.table as unknown as PlainObject)[ctx.pk]),
+        eq(through[relation.throughFkThere as string], (relation.table as unknown as PlainObject)[relation.relatedPk]),
+    );
+    return buildExists(relation.through as Table, condition!, ctx);
 }
 
 function buildRelationCondition(
@@ -198,24 +220,26 @@ function buildRelationCondition(
     const nestedCtx: SqlWhereContext = { ...ctx, table: relation.table, relations: undefined };
 
     if (isArrayRelationFilter(value)) {
-        if (relation.mode !== "otm") {
+        if (relation.mode !== "otm" && relation.mode !== "mtm") {
             throw new VSRepoAdapterError(
-                `Field '${key}': '_some'/'_every'/'_none' can only be used on a to-many ('otm') relation.`,
+                `Field '${key}': '_some'/'_every'/'_none' can only be used on a to-many ('otm'/'mtm') relation.`,
                 AdapterErrorCode.INVALID_DATA,
                 null,
             );
         }
 
-        const join = buildJoinCondition(relation, ctx);
+        // `otm` joins straight on the related table's FK; `mtm` has no FK on
+        // either side, so the "join" is a correlated EXISTS through `through`.
+        const join = relation.mode === "mtm" ? buildMtmLinkCondition(relation, ctx) : buildJoinCondition(relation, ctx);
 
         if (value._some !== undefined) {
             const nested = parsePlainWhere(value._some as PlainObject | undefined, nestedCtx);
-            return buildExists(relation, nested ? and(join, nested)! : join, ctx);
+            return buildExists(relation.table, nested ? and(join, nested)! : join, ctx);
         }
 
         if (value._none !== undefined) {
             const nested = parsePlainWhere(value._none as PlainObject | undefined, nestedCtx);
-            return not(buildExists(relation, nested ? and(join, nested)! : join, ctx));
+            return not(buildExists(relation.table, nested ? and(join, nested)! : join, ctx));
         }
 
         // `_every`: no related row may FAIL the filter — i.e. no row exists matching
@@ -224,23 +248,31 @@ function buildRelationCondition(
         // means "every row trivially satisfies nothing", so the condition is just `true`.
         const nested = parsePlainWhere(value._every as PlainObject | undefined, nestedCtx);
         if (!nested) return sql`(1 = 1)`;
-        return not(buildExists(relation, and(join, not(nested))!, ctx));
+        return not(buildExists(relation.table, and(join, not(nested))!, ctx));
     }
 
     if (isObjectRelationFilter(value)) {
+        if (relation.mode === "otm" || relation.mode === "mtm") {
+            throw new VSRepoAdapterError(
+                `Field '${key}': '_with'/'_without' can only be used on a to-one relation.`,
+                AdapterErrorCode.INVALID_DATA,
+                null,
+            );
+        }
+
         const isWithout = "_without" in value;
         const filter = (isWithout ? value._without : value._with) as PlainObject | undefined;
         const join = buildJoinCondition(relation, ctx);
         const nested = parsePlainWhere(filter, nestedCtx);
 
         const condition = nested ? and(join, isWithout ? not(nested) : nested)! : join;
-        return buildExists(relation, condition, ctx);
+        return buildExists(relation.table, condition, ctx);
     }
 
     // Fallback: nested to-one filter passed directly, without a `_with`/`_without` wrapper.
-    if (relation.mode === "otm") {
+    if (relation.mode === "otm" || relation.mode === "mtm") {
         throw new VSRepoAdapterError(
-            `Field '${key}': to-many relation filters require '_some' (or the unsupported '_every'/'_none').`,
+            `Field '${key}': to-many relation filters require '_some', '_every', or '_none'.`,
             AdapterErrorCode.INVALID_DATA,
             null,
         );
@@ -248,7 +280,7 @@ function buildRelationCondition(
 
     const join = buildJoinCondition(relation, ctx);
     const nested = parsePlainWhere(value, nestedCtx);
-    return buildExists(relation, nested ? and(join, nested)! : join, ctx);
+    return buildExists(relation.table, nested ? and(join, nested)! : join, ctx);
 }
 
 function buildFieldCondition(column: any, value: unknown): SQL | undefined {
