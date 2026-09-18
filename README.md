@@ -288,7 +288,7 @@ tags: {
 }
 ```
 
-Writes: an item without a pk is `insert`ed into `table`, then linked; an item with a pk that doesn't exist yet is `insert`ed (with `restriction: "set"`, an item with a pk that *does* exist is also updated with the rest of its fields, same as `otm`); either way, a join row is inserted only if one doesn't already exist for that pair (so resending an already-linked item is a no-op, not a duplicate row). With `restriction: "set"`, any join row for this parent that wasn't part of the payload is deleted — again, only the *join* row, never the related entity in `table`.
+Writes: an item without a pk is `insert`ed into `table`, then linked; an item with a pk that doesn't exist yet is `insert`ed; an item with a pk that *does* already exist is **not** updated — the rest of its fields in the payload are ignored, only the join row is (re)linked. This differs from `otm`, which does update an existing related row's fields on every write regardless of `restriction`: `mtm` never touches the related row's own fields once it exists, since the relation doesn't own it (see `restriction` above). Either way, a join row is inserted only if one doesn't already exist for that pair (so resending an already-linked item is a no-op, not a duplicate row). With `restriction: "set"`, any join row for this parent that wasn't part of the payload is deleted — again, only the *join* row, never the related entity in `table`.
 
 If you're on Drizzle's `defineRelations()` with a `.through(...)` join (see below), all three fields above are derived automatically from `relationsSchema` — you typically only need `restriction`.
 
@@ -318,7 +318,7 @@ relations: {
 
 | Method | Relations |
 | --- | --- |
-| `create` | Resolves `fkHere` relations first (creates/upserts related rows, sets the FK on the main row before inserting), then inserts the main row, then resolves `fkThere`/`mtm` relations (creates/upserts related rows, then — for `mtm` — links them via `through`, with the FK/join pointing to the newly created row) |
+| `create` | Resolves `fkHere` relations first (creates/upserts related rows, sets the FK on the main row before inserting), then inserts the main row, then resolves `fkThere`/`mtm` relations (creates/upserts related rows for `otm`/`oto`, creates only missing rows for `mtm` — existing ones are left as-is — then, for `mtm`, links them via `through`, with the FK/join pointing to the newly created row) |
 | `update` / `upsert` (update half) / `save` (upsert branch) | Full resolution: creates/upserts/deletes related rows (or, for `mtm`, join-table rows) per `mode`/`restriction`, updating FKs as needed |
 | `createMany` / `createManyReturning` / `updateMany` / `updateManyReturning` | Not supported — throws a `VSRepoAdapterError` naming the offending field if the payload contains a configured relation |
 
@@ -351,7 +351,7 @@ The `select` and `relations` you pass in the options are turned into Drizzle `co
 
 `merge(where, obj, options)` fetches the record matching `where` and returns it **deep-merged, in memory**, with `obj` — it does **not** write anything to the database. This mirrors how `merge` works in VSRepository: it's meant to build a full, merged entity that you then pass to `save`/`update` yourself, not to persist a partial update directly.
 
-For to-many relations (`otm`), items in the stored record and items in `obj` are matched by primary key: a match merges the two items, a new pk (or no pk) is appended. Nothing is ever removed by `merge`.
+For to-many relations (`otm`/`mtm`), items in the stored record and items in `obj` are matched by primary key: a match merges the two items, a new pk (or no pk) is appended. Nothing is ever removed by `merge`.
 
 ## Atomic and aggregation methods
 

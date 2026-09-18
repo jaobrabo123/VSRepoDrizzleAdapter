@@ -288,7 +288,7 @@ tags: {
 }
 ```
 
-Escritas: um item sem pk é `insert`ado em `table` e depois vinculado; um item com pk que ainda não existe é `insert`ado (com `restriction: "set"`, um item com pk que *já* existe também é atualizado com o resto dos campos, igual em `otm`); de qualquer forma, uma linha de junção só é inserida se ainda não existir uma pra aquele par (então reenviar um item já vinculado é um no-op, não uma linha duplicada). Com `restriction: "set"`, qualquer linha de junção deste "pai" que não fez parte do payload é apagada — de novo, só a linha de *junção*, nunca a entidade relacionada em `table`.
+Escritas: um item sem pk é `insert`ado em `table` e depois vinculado; um item com pk que ainda não existe é `insert`ado; um item com pk que *já* existe **não** é atualizado — o resto dos campos no payload é ignorado, só a linha de junção é (re)vinculada. Isso difere de `otm`, que atualiza os campos de uma linha relacionada já existente em toda escrita, independente do `restriction`: `mtm` nunca mexe nos campos da linha relacionada depois que ela já existe, já que a relação não é dona dela (ver `restriction` acima). De qualquer forma, uma linha de junção só é inserida se ainda não existir uma pra aquele par (então reenviar um item já vinculado é um no-op, não uma linha duplicada). Com `restriction: "set"`, qualquer linha de junção deste "pai" que não fez parte do payload é apagada — de novo, só a linha de *junção*, nunca a entidade relacionada em `table`.
 
 Se você usa o `defineRelations()` do Drizzle com um join `.through(...)` (ver abaixo), os três campos acima são derivados automaticamente de `relationsSchema` — normalmente você só precisa de `restriction`.
 
@@ -318,7 +318,7 @@ relations: {
 
 | Método | Relations |
 | --- | --- |
-| `create` | Resolve relations `fkHere` primeiro (cria/faz upsert das linhas relacionadas, seta a FK na linha principal antes de inserir), depois insere a linha principal, então resolve relations `fkThere`/`mtm` (cria/faz upsert das linhas relacionadas, e — pra `mtm` — vincula via `through`, com a FK/vínculo apontando pra linha recém-criada) |
+| `create` | Resolve relations `fkHere` primeiro (cria/faz upsert das linhas relacionadas, seta a FK na linha principal antes de inserir), depois insere a linha principal, então resolve relations `fkThere`/`mtm` (cria/faz upsert das linhas relacionadas pra `otm`/`oto`; pra `mtm`, só cria as linhas que ainda não existem — as existentes ficam como estão — e então vincula via `through`, com a FK/vínculo apontando pra linha recém-criada) |
 | `update` / `upsert` (metade do update) / `save` (branch de upsert) | Resolução completa: cria/faz upsert/deleta linhas relacionadas (ou, pra `mtm`, linhas da tabela de junção) conforme `mode`/`restriction`, atualizando FKs conforme necessário |
 | `createMany` / `createManyReturning` / `updateMany` / `updateManyReturning` | Não suportado — lança um `VSRepoAdapterError` apontando o campo problemático se o payload tiver uma relation configurada |
 
@@ -351,7 +351,7 @@ O `select` e o `relations` que você passa nas options são transformados em `co
 
 `merge(where, obj, options)` busca o registro que casa com `where` e devolve ele **deep-merged, em memória**, com `obj` — ele **não** escreve nada no banco. Isso reflete exatamente como o `merge` funciona no VSRepository: ele serve pra montar uma entidade completa e mesclada, que você depois passa pro `save`/`update`, e não pra persistir um update parcial diretamente.
 
-Pra relations to-many (`otm`), os itens do registro salvo e os itens de `obj` são casados pela primary key: um match faz merge dos dois itens, uma pk nova (ou sem pk) é apenas adicionada. `merge` nunca remove nada.
+Pra relations to-many (`otm`/`mtm`), os itens do registro salvo e os itens de `obj` são casados pela primary key: um match faz merge dos dois itens, uma pk nova (ou sem pk) é apenas adicionada. `merge` nunca remove nada.
 
 ## Métodos atômicos e de agregação
 
