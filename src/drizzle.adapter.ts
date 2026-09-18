@@ -28,6 +28,7 @@ import { parseDrizzleWhere, hasQuantifierFilter } from "./parsers/where.parser.j
 import { parseSqlWhere, SqlWhereContext } from "./parsers/sql-where.parser.js";
 import { parseOrderBy } from "./parsers/order-by.parser.js";
 import { parseSqlOrderBy } from "./parsers/sql-order-by.parser.js";
+import { parseDistinctOn } from "./parsers/distinct-on.parser.js";
 import { PlainObject } from "./types/plain-object.type.js";
 import { ResolvedRelation } from "./types/resolved-relation.type.js";
 import { RelationsResolver } from "./types/relations-resolver.type.js";
@@ -40,7 +41,8 @@ import { resolveFkHereFields, resolveFkThereFields, splitWritePayload } from "./
  *
  * Translates every `VSRepository` operation into Drizzle calls:
  * - **Reads** use the relational query API (`db.query[queryKey].findFirst/findMany`)
- *   with `columns`, `with`, `where`, `orderBy`, `limit`, and `offset`.
+ *   with `columns`, `with`, `where`, `orderBy`, `limit`, and `offset`. `findMany`'s
+ *   `distinct` is the one exception — Postgres-only, via `db.selectDistinctOn(...)`.
  * - **Writes** use the core query builders (`db.insert`, `db.update`, `db.delete`)
  *   with imperative relation resolution when a `relations` config is provided.
  * - **Raw SQL** uses `db.execute` with dialect-aware placeholder substitution.
@@ -132,11 +134,16 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * given (recognizes relations-of-relations too, at any depth) or, as a
      * fallback, from the constructor's write-only `relations` config
      * (single level only — see `parseColumns` docs).
+     *
+     * `distinct` (only ever passed by `findMany`, for the `postgresql`
+     * dialect) is forwarded to `resolveFindWhere`, which runs it through the
+     * same pk-prefetch path as `_every`/`_none` — see its docs.
      */
     private async resolveReadArgs(
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T>,
         single = false,
+        distinct?: (keyof T)[],
     ): Promise<PlainObject> {
         options ??= {};
 
@@ -156,6 +163,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             order: options.order,
             limit: single ? 1 : options.pagination?.limit,
             offset: single ? undefined : options.pagination?.offset,
+            distinct,
         });
 
         return {
@@ -206,22 +214,48 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * two `where` parsers — from the outside, `findOne`/`findMany`/etc. never
      * throw `NOT_SUPPORTED` for them, at the cost of an extra round-trip only
      * when they're actually used.
+     *
+     * `opts.distinct` (only ever passed by `findMany`, and only for the
+     * `postgresql` dialect) takes this same prefetch path, but via
+     * `db.selectDistinctOn(...)` (`parseDistinctOn`) instead of a plain
+     * `db.select(...)` — the relational query API has no `distinct` of its
+     * own either, so deduping has to happen at this pk-prefetch level too.
+     * Unlike the `_every`/`_none` branch, this one runs whenever `distinct`
+     * is given, regardless of `hasQuantifierFilter`.
      */
     private async resolveFindWhere(
         where: VSRepoWhere<T>,
-        opts?: { db?: unknown; order?: AdapterMethodOptions<T>["order"]; limit?: number; offset?: number },
+        opts?: {
+            db?: unknown;
+            order?: AdapterMethodOptions<T>["order"];
+            limit?: number;
+            offset?: number;
+            distinct?: (keyof T)[];
+        },
     ): Promise<{ where: PlainObject | undefined; orderBy?: PlainObject; paginationApplied: boolean }> {
-        if (!hasQuantifierFilter(where)) {
+        if (opts?.distinct === undefined && !hasQuantifierFilter(where)) {
             return { where: parseDrizzleWhere<T>(where, this.dialect), paginationApplied: false };
         }
 
         const executor = (opts?.db as DrizzleDbLike | undefined) ?? this.db;
         const pkColumn = (this.table as unknown as PlainObject)[this.pk];
         const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
-        const sqlOrderBy = parseSqlOrderBy<T>(this.table, opts?.order);
 
-        let qb = (executor as any).select({ pk: pkColumn }).from(this.table).where(condition);
-        if (sqlOrderBy) qb = qb.orderBy(...sqlOrderBy);
+        let qb: any;
+
+        if (opts?.distinct !== undefined) {
+            const distinctOn = parseDistinctOn<T>(this.table, opts.distinct, opts.order);
+            qb = (executor as any)
+                .selectDistinctOn(distinctOn.columns, { pk: pkColumn })
+                .from(this.table)
+                .where(condition)
+                .orderBy(...distinctOn.orderBy);
+        } else {
+            const sqlOrderBy = parseSqlOrderBy<T>(this.table, opts?.order);
+            qb = (executor as any).select({ pk: pkColumn }).from(this.table).where(condition);
+            if (sqlOrderBy) qb = qb.orderBy(...sqlOrderBy);
+        }
+
         if (opts?.limit !== undefined) qb = qb.limit(opts.limit);
         if (opts?.offset !== undefined) qb = qb.offset(opts.offset);
 
@@ -399,8 +433,16 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     /**
      * Finds all records matching `where`.
      *
-     * Does **not** support `distinct` — passing it throws `NOT_SUPPORTED` (Drizzle's relational
-     * query API has no `distinct` option).
+     * `distinct` is only supported for the `postgresql` dialect, via
+     * `db.selectDistinctOn(...)` — Drizzle's relational query API
+     * (`db.query[queryKey].findMany`) has no `distinct` option of its own,
+     * so this adapter first prefetches the deduped rows' pks with the core
+     * query builder (see `resolveFindWhere`), then re-fetches them through
+     * the relational API so `select`/`relations` still apply normally. When
+     * both `distinct` and `order` are given, `order` also decides which row
+     * "wins" each distinct group (e.g. `distinct: ["userId"]` combined with
+     * `order: { createdAt: "desc" }` keeps each user's most recent row).
+     * For any other dialect, passing `distinct` throws `NOT_SUPPORTED`.
      *
      * @publicApi
      */
@@ -408,17 +450,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T> & { distinct?: (keyof T)[] },
     ): Promise<T[]> {
-        if (options?.distinct !== undefined) {
+        if (options?.distinct !== undefined && this.dialect !== "postgresql") {
             throw new VSRepoAdapterError(
-                "This adapter doesn't support 'distinct' in 'findMany': Drizzle's relational query API " +
-                    "(db.query[queryKey].findMany) has no 'distinct' option.",
+                `This adapter only supports 'distinct' in 'findMany' for the 'postgresql' dialect (uses ` +
+                    `'selectDistinctOn', which is Postgres-specific) — this instance is configured for '${this.dialect}'.`,
                 AdapterErrorCode.NOT_SUPPORTED,
                 null,
             );
         }
 
         try {
-            const arg = await this.resolveReadArgs(where, options);
+            const arg = await this.resolveReadArgs(where, options, false, options?.distinct);
             return (await this.getQueryBuilder(options?.db).findMany(arg)) as T[];
         } catch (error) {
             throw mapDrizzleError(error, "findMany", this.dialect);
