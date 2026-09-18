@@ -9,6 +9,20 @@ jobs:
   publish:
     name: Publish package
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     # Environment name
     environment: npm-publish
@@ -16,6 +30,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/test_db
 
     steps:
       - name: Checkout
@@ -34,6 +51,9 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Apply migrations
+        run: bunx drizzle-kit migrate
 
       - name: Test
         run: bun run test
