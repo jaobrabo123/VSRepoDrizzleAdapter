@@ -358,7 +358,7 @@ Pra relations to-many (`otm`/`mtm`), os itens do registro salvo e os itens de `o
 
 O adapter implementa os 8 métodos abstratos pros quais `increment`/`decrement`/`multiply`/`divide`/`sum`/`average`/`min`/`max` do `VSRepository` delegam: `incrementOne`, `decrementOne`, `multiplyOne`, `divideOne`, `sum`, `average`, `min`, `max`.
 
-- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` traduzem pra expressões SQL raw — ``sql`${column} + ${value}` `` (e `-`/`*`/`/`) — então a operação é avaliada **server-side** contra o valor *atual* do registro (`UPDATE ... SET field = field + value`), e não como um fetch-then-save no cliente. O adapter lê a pk do registro primeiro, aplica o update atômico, e depois re-lê a entidade completa pra retornar.
+- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` traduzem pra expressões SQL raw — ``sql`${column} + ${value}` `` (e `-`/`*`/`/`) — então a operação é avaliada **server-side** contra o valor *atual* do registro (`UPDATE ... SET field = field + value`), e não como um fetch-then-save no cliente. O adapter lê a pk do registro (e as relations pedidas) primeiro, aplica o update atômico com `RETURNING` das colunas escalares pedidas, e mescla o resultado — sem uma segunda leitura, e colunas mantidas por `$onUpdate`/triggers de UPDATE voltam atualizadas.
 - `sum`/`average`/`min`/`max` traduzem pras funções de agregação do Drizzle `sum()`/`avg()`/`min()`/`max()`. O resultado bruto (`number`, `bigint`, `string` ou `null`) é normalizado pra `number | null` — `null` é repassado como está (espelhando o comportamento dos agregados SQL sobre um conjunto vazio), e valores não-numéricos são convertidos via `Number()`.
 
 ```typescript

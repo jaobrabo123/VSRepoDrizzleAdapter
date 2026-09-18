@@ -358,7 +358,7 @@ For to-many relations (`otm`/`mtm`), items in the stored record and items in `ob
 
 The adapter implements the 8 abstract methods `VSRepository`'s `increment`/`decrement`/`multiply`/`divide`/`sum`/`average`/`min`/`max` delegate to: `incrementOne`, `decrementOne`, `multiplyOne`, `divideOne`, `sum`, `average`, `min`, `max`.
 
-- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` translate into raw SQL expressions — ``sql`${column} + ${value}` `` (and `-`/`*`/`/`) — so the operation is evaluated **server-side** against the row's *current* value (`UPDATE ... SET field = field + value`), not as a fetch-then-save round trip on the client. The adapter reads the row's pk first, applies the atomic update, then re-reads the full entity to return.
+- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` translate into raw SQL expressions — ``sql`${column} + ${value}` `` (and `-`/`*`/`/`) — so the operation is evaluated **server-side** against the row's *current* value (`UPDATE ... SET field = field + value`), not as a fetch-then-save round trip on the client. The adapter reads the row's pk (plus any requested relations) first, applies the atomic update with `RETURNING` for the requested scalar columns, and merges them into the result — no second read, and columns maintained by `$onUpdate`/UPDATE triggers come back current.
 - `sum`/`average`/`min`/`max` translate into Drizzle's `sum()`/`avg()`/`min()`/`max()` aggregate functions. The raw result (`number`, `bigint`, `string`, or `null`) is normalized to `number | null` — `null` is returned as-is (mirroring SQL's aggregate behavior over an empty set), and non-number values are converted via `Number()`.
 
 ```typescript
