@@ -36,4 +36,4 @@ export const relations = defineRelations(schema, r => ({
     },
 }));
 
-export const db = drizzle(process.env.DATABASE_URL!, { relations, logger: false });
+export const db = drizzle(process.env.DATABASE_URL!, { relations, logger: true });

@@ -557,10 +557,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
                 await resolveFkThereFields(tx, fkThereEntries, ownPkValue, true);
 
-                const readArg = await this.resolveReadArgs(
-                    { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
-                    options,
-                );
+                const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, {
+                    ...options,
+                    db: tx,
+                });
                 const result = await this.getQueryBuilder(tx).findFirst(readArg);
 
                 return result as T;
@@ -620,7 +620,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
                 const readArg = await this.resolveReadArgs(
                     { [this.pk]: { in: created.map((_: any) => _[this.pk]) } } as unknown as VSRepoWhere<T>,
-                    options,
+                    { ...options, db: tx },
                 );
                 const result = await this.getQueryBuilder(tx).findMany(readArg);
 
@@ -641,7 +641,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     async delete(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
         try {
             return await this.runTransactional(options?.db, async tx => {
-                const readArg = await this.resolveReadArgs(where, options, true);
+                const readArg = await this.resolveReadArgs(where, { ...options, db: tx }, true);
 
                 const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
 
@@ -713,7 +713,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     async deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
         try {
             return await this.runTransactional(options?.db, async tx => {
-                const readArg = await this.resolveReadArgs(where, options);
+                const readArg = await this.resolveReadArgs(where, { ...options, db: tx });
 
                 const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
 
@@ -737,7 +737,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 const pkColumn = (this.table as PlainObject)[this.pk];
                 const condition = inArray(pkColumn, pks);
 
-                await (tx as any).delete(this.table).where(condition);
+                await tx.delete(this.table).where(condition);
 
                 return allRemoved as T[];
             });
@@ -805,12 +805,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
             if (Object.keys(scalarFields).length > 0) {
                 const pkColumn = (this.table as unknown as PlainObject)[this.pk];
-                await (tx as any).update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
+                await tx.update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
             }
 
             await resolveFkThereFields(tx, fkThereEntries, ownPkValue, false);
 
-            const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, options);
+            const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, {
+                ...options,
+                db: tx,
+            });
             const result = await this.getQueryBuilder(tx).findFirst(readArg);
 
             if (!result) {
@@ -880,7 +883,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
                 const readArg = await this.resolveReadArgs(
                     { [this.pk]: { in: updated.map((_: any) => _[this.pk]) } } as unknown as VSRepoWhere<T>,
-                    options,
+                    { ...options, db: tx },
                 );
                 const result = await this.getQueryBuilder(tx).findMany(readArg);
 
@@ -1005,13 +1008,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     ): Promise<T> {
         try {
             return await this.runTransactional(options?.db, async tx => {
-                const current = await this.getQueryBuilder(tx).findFirst({
-                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
-                    // Only the pk is needed: atomic updates touch a single numeric
-                    // column and never resolve relations — a full-row read here
-                    // would ship the whole entity back to the client for nothing.
-                    columns: { [this.pk]: true },
-                });
+                const readArg = await this.resolveReadArgs(where, { ...options, db: tx }, true);
+
+                const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
+                const columnsWithoutField = readArg.columns && !readArg.columns[field];
+
+                // * Precisa injetar a pk para poder acessar no where lá em baixo
+                if (columnsWithoutPk) {
+                    readArg.columns[this.pk] = true;
+                }
+
+                const current = await this.getQueryBuilder(tx).findFirst(readArg);
 
                 if (!current) {
                     throw new VSRepoAdapterError(
@@ -1022,19 +1029,35 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 }
 
                 const ownPkValue = (current as PlainObject)[this.pk];
-                const pkColumn = (this.table as unknown as PlainObject)[this.pk];
-                const column = (this.table as unknown as PlainObject)[field as string];
+                const pkColumn = (this.table as PlainObject)[this.pk];
+                const column = (this.table as PlainObject)[field as string];
 
-                await (tx as any)
+                const qb = tx
                     .update(this.table)
-                    .set({ [field as string]: toExpression(column, value) })
+                    .set({ [field]: toExpression(column, value) })
                     .where(eq(pkColumn, ownPkValue));
+                if (!columnsWithoutField) qb.returning({ [field]: column });
 
-                const readArg = await this.resolveReadArgs(
-                    { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
-                    options,
-                );
-                return (await this.getQueryBuilder(tx).findFirst(readArg)) as T;
+                const qbResult = await qb;
+
+                // * Retira a pk do retorno se o usuário não solicitou
+                if (columnsWithoutPk) {
+                    delete current[this.pk];
+                }
+
+                // * Injeta o valor atualizado se o usuário solicitou no retorno
+                if (!columnsWithoutField) {
+                    if (!qbResult[0]) {
+                        throw new VSRepoAdapterError(
+                            `'${operation}' updated no records matching the given 'where'.`,
+                            AdapterErrorCode.NOT_FOUND,
+                            null,
+                        );
+                    }
+                    current[field] = qbResult[0][field];
+                }
+
+                return current as T;
             });
         } catch (error) {
             throw mapDrizzleError(error, operation, this.dialect);
