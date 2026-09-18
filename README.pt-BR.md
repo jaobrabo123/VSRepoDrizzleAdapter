@@ -490,6 +490,6 @@ O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra ca
 
 ## Requisitos
 
-- `vsrepo` ^2.3.0
+- `vsrepo` ^2.4.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20

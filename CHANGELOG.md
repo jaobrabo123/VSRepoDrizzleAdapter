@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [1.0.0-alpha.2] - 2026-09-17
 
 ### Added
 - `mtm` (many-to-many) relation support: `AdapterRelation`/`ResolvedRelation`'s `mode` now accepts `"mtm"`, resolved via a join/pivot table (`through`/`throughFkHere`/`throughFkThere`) instead of a direct FK
@@ -19,6 +19,16 @@ All notable changes to this project will be documented in this file.
   - `pagination` is applied after deduplication, on the distinct set
   - `sqlite`/`cockroach` still throw `NOT_SUPPORTED` for `distinct`, since `selectDistinctOn` is Postgres-specific
   - New `src/parsers/distinct-on.parser.ts` (`parseDistinctOn`) builds the `selectDistinctOn` column list and its required leading `ORDER BY`; throws `VSRepoAdapterError` (code `INVALID_DATA`) for an empty `distinct` array, or (code `FIELD_NOT_FOUND`) for an unknown field
+- GitHub Actions publish workflow (`.github/workflows/publish.yml`) added; CI actions bumped from v4 to v6 and `bun test` corrected to `bun run test` in `publish.yml`
+
+### Changed
+- `vsrepo` peer dependency bumped to `^2.4.0` (now required)
+- Performance improvements across `relations-writes.resolver`'s resolution logic
+
+### Fixed
+- `oto` relations configured with `fkHere` now resolve the correct FK column on writes
+- Corrected `mtm`/`otm` behavior in relation-writes
+- `mergeEntities` — used by the `upsert` path — now also merges `mtm` relations
 
 ### Documentation
 - READMEs (English/pt-BR): removed the "`mtm` not supported" notice, documented `mode: "mtm"` and the new `through`/`throughFkHere`/`throughFkThere` config, and updated the derivation/restriction/write-resolution tables accordingly
@@ -26,7 +36,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Unreleased] (Português)
+## [1.0.0-alpha.2] - 2026-09-17 (Português)
 
 ### Adicionado
 - Suporte à relation `mtm` (many-to-many): `mode` de `AdapterRelation`/`ResolvedRelation` agora aceita `"mtm"`, resolvida via uma tabela de junção/pivot (`through`/`throughFkHere`/`throughFkThere`) em vez de uma FK direta
@@ -39,6 +49,16 @@ All notable changes to this project will be documented in this file.
   - `pagination` é aplicada depois da deduplicação, sobre o conjunto já distinto
   - `sqlite`/`cockroach` continuam lançando `NOT_SUPPORTED` pro `distinct`, já que `selectDistinctOn` é específico do Postgres
   - Novo `src/parsers/distinct-on.parser.ts` (`parseDistinctOn`) monta a lista de colunas do `selectDistinctOn` e o `ORDER BY` inicial obrigatório; lança `VSRepoAdapterError` (code `INVALID_DATA`) pra um array `distinct` vazio, ou (code `FIELD_NOT_FOUND`) pra um campo desconhecido
+- Adicionado o workflow de publish do GitHub Actions (`.github/workflows/publish.yml`); ações da CI atualizadas de v4 pra v6 e `bun test` corrigido pra `bun run test` no `publish.yml`
+
+### Alterado
+- Peer dependency `vsrepo` elevada pra `^2.4.0` (agora requerida)
+- Melhorias de performance na lógica de resolução do `relations-writes.resolver`
+
+### Corrigido
+- Relations `oto` configuradas com `fkHere` agora resolvem a coluna FK correta nas escritas
+- Corrigido o comportamento de `mtm`/`otm` no relation-writes
+- `mergeEntities` — usado no caminho do `upsert` — agora também faz merge de relações `mtm`
 
 ### Documentação
 - READMEs (inglês/pt-BR): removido o aviso de "`mtm` não suportado", documentado o `mode: "mtm"` e a nova config `through`/`throughFkHere`/`throughFkThere`, e atualizadas as tabelas de derivação/restriction/resolução de escrita de acordo

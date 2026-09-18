@@ -490,6 +490,6 @@ await userRepository.transaction(async tx => {
 
 ## Requirements
 
-- `vsrepo` ^2.3.0
+- `vsrepo` ^2.4.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20
