@@ -173,7 +173,6 @@ await postRepository.transaction(async tx => {
 
     const postIncremented = await postRepository.increment(postUpdated.id, "views", 50, {
         db: tx,
-        select: { userId: true, views: true },
     });
     console.log("postIncremented", postIncremented);
 
