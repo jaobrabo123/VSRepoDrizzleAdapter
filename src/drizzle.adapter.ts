@@ -1010,13 +1010,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, { ...options, db: tx }, true);
 
-                const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
-                const columnsWithoutField = readArg.columns && !readArg.columns[field];
+                const requestedScalars = readArg.columns ? Object.keys(readArg.columns) : undefined;
+                const pkRequested = !readArg.columns || !!readArg.columns[this.pk];
 
-                // * Precisa injetar a pk para poder acessar no where lá em baixo
-                if (columnsWithoutPk) {
-                    readArg.columns[this.pk] = true;
-                }
+                // The pre-read only locates the row — the pk feeds the UPDATE's WHERE —
+                // and loads the requested relations. The scalar values come from the
+                // UPDATE's RETURNING below, so `$onUpdate`/UPDATE-trigger columns don't
+                // come back stale.
+                readArg.columns = { [this.pk]: true };
 
                 const current = await this.getQueryBuilder(tx).findFirst(readArg);
 
@@ -1036,28 +1037,39 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     .update(this.table)
                     .set({ [field]: toExpression(column, value) })
                     .where(eq(pkColumn, ownPkValue));
-                if (!columnsWithoutField) qb.returning({ [field]: column });
 
-                const qbResult = await qb;
+                // Post-write scalar projection: exactly the requested columns, or every
+                // scalar column when no `select` was given. When only relations were
+                // requested (empty scalar list), the pk is returned as a 0-row probe and
+                // stripped from the result below.
+                if (requestedScalars === undefined) {
+                    qb.returning();
+                } else if (requestedScalars.length > 0) {
+                    qb.returning(
+                        Object.fromEntries(requestedScalars.map(key => [key, (this.table as PlainObject)[key]])),
+                    );
+                } else {
+                    qb.returning({ [this.pk]: pkColumn });
+                }
+
+                const [written] = await qb;
+
+                if (!written) {
+                    throw new VSRepoAdapterError(
+                        `'${operation}' updated no records matching the given 'where'.`,
+                        AdapterErrorCode.NOT_FOUND,
+                        null,
+                    );
+                }
+
+                const result = { ...current, ...written } as PlainObject;
 
                 // * Retira a pk do retorno se o usuário não solicitou
-                if (columnsWithoutPk) {
-                    delete current[this.pk];
+                if (!pkRequested) {
+                    delete result[this.pk];
                 }
 
-                // * Injeta o valor atualizado se o usuário solicitou no retorno
-                if (!columnsWithoutField) {
-                    if (!qbResult[0]) {
-                        throw new VSRepoAdapterError(
-                            `'${operation}' updated no records matching the given 'where'.`,
-                            AdapterErrorCode.NOT_FOUND,
-                            null,
-                        );
-                    }
-                    current[field] = qbResult[0][field];
-                }
-
-                return current as T;
+                return result as T;
             });
         } catch (error) {
             throw mapDrizzleError(error, operation, this.dialect);
