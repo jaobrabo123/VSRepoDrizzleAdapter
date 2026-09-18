@@ -6,6 +6,8 @@ import {
     CountResult,
     DeepPartial,
     NumericKeys,
+    VSLogger,
+    VSLogLevel,
     VSRepoAdapter,
     VSRepoAdapterError,
     VSRepoTransactionOptions,
@@ -62,6 +64,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly queryKey: keyof K["query"];
     private readonly relations?: Map<string, ResolvedRelation>;
     private readonly relationsResolver?: RelationsResolver;
+    private readonly logger: VSLogger;
 
     /**
      * Creates a new Drizzle adapter instance.
@@ -73,7 +76,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * — unless `dialect` is given explicitly, which always wins (see `resolveTableConfig`).
      *
      * @param db - The Drizzle database client instance.
-     * @param config - Adapter configuration: table, queryKey, optional dialect, relations and relationsSchema.
+     * @param config - Adapter configuration: table, queryKey, optional dialect, relations, relationsSchema, logLevel and logSlowThresholdMs.
      *
      * @publicApi
      */
@@ -105,6 +108,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         } else if (this.relations) {
             this.relationsResolver = createFlatRelationsResolver(new Set(this.relations.keys()));
         }
+
+        this.logger = new VSLogger(
+            validated.config.logLevel ?? VSLogLevel.WARN,
+            this.constructor.name + "Logger",
+            validated.config.logSlowThresholdMs ?? 300,
+        );
+
+        this.logger.logInfo(
+            `${this.constructor.name} initialized for table '${this.queryKey as string}' (dialect: '${this.dialect}', pk: '${this.pk}'` +
+                `${this.relations ? `, relations: [${[...this.relations.keys()].join(", ")}]` : ""})`,
+        );
     }
 
     /**
@@ -318,6 +332,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
     private async runTransactional<R>(db: any, fn: (tx: DrizzleTransactionLike) => Promise<R>): Promise<R> {
         if (db && !this.isRootClient(db)) {
+            this.logger.logDebug("Reusing an already-active transaction client");
             return fn(db);
         }
 
@@ -347,12 +362,16 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             );
         }
 
+        const start = this.logger.startPerformLog("run runInTransaction");
+
         try {
             return await this.db.transaction(fn, {
                 isolationLevel: options?.isolationLevel && resolveIsolationLevel(options.isolationLevel),
             });
         } catch (error) {
             throw mapDrizzleError(error, "runInTransaction", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -378,14 +397,23 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      */
     async query<R = any>(rawQuery: string, options?: AdapterQueryOptions): Promise<R> {
         const executor = (options?.db as DrizzleTransactionLike | undefined) ?? this.db;
+        const start = this.logger.startPerformLog("run query");
 
         try {
             const sqlQuery = resolveRawSql(this.dialect, rawQuery, options?.args);
+            this.logger.logDebug("Resolved raw SQL for 'query'", {
+                rawQuery,
+                args: options?.args,
+                modifying: options?.modifying,
+            });
+
             const result = await executor.execute(sqlQuery);
 
             return resolveRawResult(this.dialect, result, options?.modifying ?? false) as R;
         } catch (error) {
             throw mapDrizzleError(error, "query", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -395,13 +423,19 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async findOne(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T | null> {
+        const start = this.logger.startPerformLog("run findOne");
+
         try {
             const arg = await this.resolveReadArgs(where, options, true);
+            this.logger.logDebug("Resolved Drizzle arg for 'findOne'", arg);
+
             const result = await this.getQueryBuilder(options?.db).findFirst(arg);
 
             return (result ?? null) as T | null;
         } catch (error) {
             throw mapDrizzleError(error, "findOne", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -412,8 +446,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async findOneOrThrow(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        const start = this.logger.startPerformLog("run findOneOrThrow");
+
         try {
             const arg = await this.resolveReadArgs(where, options, true);
+            this.logger.logDebug("Resolved Drizzle arg for 'findOneOrThrow'", arg);
+
             const result = await this.getQueryBuilder(options?.db).findFirst(arg);
 
             if (!result) {
@@ -427,6 +465,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return result as T;
         } catch (error) {
             throw mapDrizzleError(error, "findOneOrThrow", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -459,11 +499,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             );
         }
 
+        const start = this.logger.startPerformLog("run findMany");
+
         try {
             const arg = await this.resolveReadArgs(where, options, false, options?.distinct);
+            this.logger.logDebug("Resolved Drizzle arg for 'findMany'", arg);
+
             return (await this.getQueryBuilder(options?.db).findMany(arg)) as T[];
         } catch (error) {
             throw mapDrizzleError(error, "findMany", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -477,11 +523,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async save(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        const start = this.logger.startPerformLog("run save");
+
         try {
             const objAny = obj as unknown as PlainObject;
             const pkValue = objAny[this.pk];
 
             if (pkValue === undefined) {
+                this.logger.logDebug("'save': no pk in payload — delegating to 'create'");
                 return await this.create(obj, options);
             }
 
@@ -491,8 +540,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 });
 
                 if (current === null) {
+                    this.logger.logDebug(
+                        `'save': no record found for pk '${String(pkValue)}' — delegating to 'create'`,
+                    );
                     return this.create(obj, { ...options, db: tx });
                 }
+
+                this.logger.logDebug(`'save': record found for pk '${String(pkValue)}' — delegating to 'update'`);
 
                 // The row was already read in this tx — hand it to the core so the
                 // update path doesn't re-fetch the same row a second time.
@@ -505,6 +559,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, "save", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -517,12 +573,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async saveMany(objs: DeepPartial<T>[], options?: AdapterMethodOptions<T>): Promise<T[]> {
+        const start = this.logger.startPerformLog("run saveMany");
+
         try {
+            this.logger.logDebug(`'saveMany': saving ${objs.length} record(s)`);
             return await this.runTransactional(options?.db, tx =>
                 Promise.all(objs.map(obj => this.save(obj, { ...options, db: tx }))),
             );
         } catch (error) {
             throw mapDrizzleError(error, "saveMany", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -536,6 +597,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async create(obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        const start = this.logger.startPerformLog("run create");
+
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const objAny = obj as unknown as PlainObject;
@@ -547,7 +610,16 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     false,
                 );
 
-                await resolveFkHereFields(tx, fkHereEntries, scalarFields, undefined, true);
+                if (fkHereEntries.length > 0 || fkThereEntries.length > 0) {
+                    this.logger.logDebug(
+                        `'create': resolving relations — fkHere: [${fkHereEntries.map(([key]) => key).join(", ")}], ` +
+                            `fkThere: [${fkThereEntries.map(([key]) => key).join(", ")}]`,
+                    );
+                }
+
+                await resolveFkHereFields(tx, fkHereEntries, scalarFields, undefined, true, this.logger);
+
+                this.logger.logDebug("Resolved Drizzle scalar fields for 'create'", scalarFields);
 
                 const [created] = await (tx as any)
                     .insert(this.table)
@@ -555,7 +627,7 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     .returning({ [this.pk]: (this.table as any)[this.pk] });
                 const ownPkValue = created[this.pk];
 
-                await resolveFkThereFields(tx, fkThereEntries, ownPkValue, true);
+                await resolveFkThereFields(tx, fkThereEntries, ownPkValue, true, this.logger);
 
                 const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, {
                     ...options,
@@ -567,6 +639,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, "create", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -582,9 +656,16 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         objs: DeepPartial<T>[],
         options?: AdapterMethodOptions<T> & { ignoreConflicts?: boolean },
     ): Promise<CountResult> {
+        const start = this.logger.startPerformLog("run createMany");
+
         try {
             const data = objs.map(obj => this.stripRelationFields(obj as unknown as PlainObject));
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
+
+            this.logger.logDebug(`Resolved Drizzle arg for 'createMany' (${data.length} row(s))`, {
+                data,
+                ignoreConflicts: options?.ignoreConflicts,
+            });
 
             let qb = (executor as any).insert(this.table).values(data);
             if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
@@ -595,6 +676,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return { count: affected };
         } catch (error) {
             throw mapDrizzleError(error, "createMany", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -610,8 +693,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         objs: DeepPartial<T>[],
         options?: AdapterMethodOptions<T> & { ignoreConflicts?: boolean },
     ): Promise<T[]> {
+        const start = this.logger.startPerformLog("run createManyReturning");
+
         try {
             const data = objs.map(obj => this.stripRelationFields(obj as unknown as PlainObject));
+            this.logger.logDebug(`Resolved Drizzle arg for 'createManyReturning' (${data.length} row(s))`, {
+                data,
+                ignoreConflicts: options?.ignoreConflicts,
+            });
+
             return await this.runTransactional(options?.db, async tx => {
                 let qb = tx.insert(this.table).values(data);
                 if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
@@ -628,6 +718,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, "createManyReturning", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -639,9 +731,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async delete(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        const start = this.logger.startPerformLog("run delete");
+
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, { ...options, db: tx }, true);
+                this.logger.logDebug("Resolved Drizzle arg for 'delete'", readArg);
 
                 const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
 
@@ -672,6 +767,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, "delete", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -683,9 +780,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async deleteMany(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<CountResult> {
+        const start = this.logger.startPerformLog("run deleteMany");
+
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
             const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            this.logger.logDebug("Resolved Drizzle condition for 'deleteMany'", { where });
 
             const result = await (executor as any).delete(this.table).where(condition);
             const affected = resolveRawResult(this.dialect, result, true) as number;
@@ -693,6 +793,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return { count: affected ?? 0 };
         } catch (error) {
             throw mapDrizzleError(error, "deleteMany", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -711,9 +813,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async deleteManyReturning(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<T[]> {
+        const start = this.logger.startPerformLog("run deleteManyReturning");
+
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, { ...options, db: tx });
+                this.logger.logDebug("Resolved Drizzle arg for 'deleteManyReturning'", readArg);
 
                 const columnsWithoutPk = readArg.columns && !readArg.columns[this.pk];
 
@@ -743,6 +848,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, "deleteManyReturning", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -755,10 +862,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async update(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<T> {
+        const start = this.logger.startPerformLog("run update");
+
         try {
             return await this.updateCore(where, obj, options);
         } catch (error) {
             throw mapDrizzleError(error, "update", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -801,14 +912,25 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 true,
             );
 
-            await resolveFkHereFields(tx, fkHereEntries, scalarFields, resolved, false);
+            if (fkHereEntries.length > 0 || fkThereEntries.length > 0) {
+                this.logger.logDebug(
+                    `'update' (pk '${String(ownPkValue)}'): resolving relations — fkHere: [${fkHereEntries.map(([key]) => key).join(", ")}], ` +
+                        `fkThere: [${fkThereEntries.map(([key]) => key).join(", ")}]`,
+                );
+            }
+
+            await resolveFkHereFields(tx, fkHereEntries, scalarFields, resolved, false, this.logger);
 
             if (Object.keys(scalarFields).length > 0) {
+                this.logger.logDebug(
+                    `Resolved Drizzle scalar fields for 'update' (pk '${String(ownPkValue)}')`,
+                    scalarFields,
+                );
                 const pkColumn = (this.table as unknown as PlainObject)[this.pk];
                 await tx.update(this.table).set(scalarFields).where(eq(pkColumn, ownPkValue));
             }
 
-            await resolveFkThereFields(tx, fkThereEntries, ownPkValue, false);
+            await resolveFkThereFields(tx, fkThereEntries, ownPkValue, false, this.logger);
 
             const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>, {
                 ...options,
@@ -843,10 +965,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         obj: DeepPartial<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<CountResult> {
+        const start = this.logger.startPerformLog("run updateMany");
+
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
             const data = this.stripRelationFields(obj as unknown as PlainObject);
             const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            this.logger.logDebug("Resolved Drizzle arg for 'updateMany'", { data, where });
 
             const result = await (executor as any).update(this.table).set(data).where(condition);
             const affected = resolveRawResult(this.dialect, result, true) as number;
@@ -854,6 +979,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return { count: affected ?? 0 };
         } catch (error) {
             throw mapDrizzleError(error, "updateMany", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -870,8 +997,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         obj: DeepPartial<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T[]> {
+        const start = this.logger.startPerformLog("run updateManyReturning");
+
         try {
             const data = this.stripRelationFields(obj as unknown as PlainObject);
+            this.logger.logDebug("Resolved Drizzle arg for 'updateManyReturning'", { data, where });
+
             return await this.runTransactional(options?.db, async tx => {
                 const condition = parseSqlWhere(where, this.getSqlWhereContext(tx));
 
@@ -891,6 +1022,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, "updateManyReturning", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -900,14 +1033,19 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async count(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number> {
+        const start = this.logger.startPerformLog("run count");
+
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
             const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            this.logger.logDebug("Resolved Drizzle condition for 'count'", { where });
 
             const [row] = await (executor as any).select({ value: countFn() }).from(this.table).where(condition);
             return Number(row?.value ?? 0);
         } catch (error) {
             throw mapDrizzleError(error, "count", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -919,9 +1057,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async exists(where: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<boolean> {
+        const start = this.logger.startPerformLog("run exists");
+
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
             const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
+            this.logger.logDebug("Resolved Drizzle condition for 'exists'", { where });
 
             const rows = await (executor as any)
                 .select({ one: sql`1` })
@@ -931,6 +1072,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return rows.length > 0;
         } catch (error) {
             throw mapDrizzleError(error, "exists", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -943,8 +1086,12 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * @publicApi
      */
     async merge<K>(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<K & T> {
+        const start = this.logger.startPerformLog("run merge");
+
         try {
             const readArg = await this.resolveReadArgs(where, options);
+            this.logger.logDebug("Resolved Drizzle arg for 'merge'", readArg);
+
             const result = await this.getQueryBuilder(options?.db).findFirst(readArg);
 
             if (!result) {
@@ -959,6 +1106,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 T;
         } catch (error) {
             throw mapDrizzleError(error, "merge", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -976,12 +1125,17 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         update: DeepPartial<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
+        const start = this.logger.startPerformLog("run upsert");
+
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const current = await this.findCurrentByWhere(where, { db: tx });
 
                 if (current) {
                     const ownPkValue = current[this.pk];
+                    this.logger.logDebug(
+                        `'upsert': record found for pk '${String(ownPkValue)}' — delegating to 'update'`,
+                    );
                     return this.updateCore(
                         { [this.pk]: ownPkValue } as unknown as VSRepoWhere<T>,
                         update,
@@ -990,10 +1144,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                     );
                 }
 
+                this.logger.logDebug("'upsert': no record found for the given 'where' — delegating to 'create'");
                 return this.create(create, { ...options, db: tx });
             });
         } catch (error) {
             throw mapDrizzleError(error, "upsert", this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -1006,9 +1163,15 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         where: VSRepoWhere<T>,
         options?: AdapterMethodOptions<T>,
     ): Promise<T> {
+        const start = this.logger.startPerformLog(`run ${operation}`);
+
         try {
             return await this.runTransactional(options?.db, async tx => {
                 const readArg = await this.resolveReadArgs(where, { ...options, db: tx }, true);
+                this.logger.logDebug(`Resolved Drizzle arg for '${operation}' (field '${String(field)}')`, {
+                    readArg,
+                    value,
+                });
 
                 const requestedScalars = readArg.columns ? Object.keys(readArg.columns) : undefined;
                 const pkRequested = !readArg.columns || !!readArg.columns[this.pk];
@@ -1073,6 +1236,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             });
         } catch (error) {
             throw mapDrizzleError(error, operation, this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 
@@ -1148,10 +1313,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         where: VSRepoWhere<T> | undefined,
         options: AdapterMethodOptions<T> | undefined,
     ): Promise<number | null> {
+        const start = this.logger.startPerformLog(`run ${operation}`);
+
         try {
             const executor = (options?.db as DrizzleDbLike | undefined) ?? this.db;
             const condition = parseSqlWhere(where, this.getSqlWhereContext(executor));
             const column = (this.table as unknown as PlainObject)[field as string];
+            this.logger.logDebug(`Resolved Drizzle condition for '${operation}' (field '${String(field)}')`, { where });
 
             const [row] = await (executor as any)
                 .select({ value: fn(column) })
@@ -1163,6 +1331,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             return typeof raw === "number" ? raw : Number(raw);
         } catch (error) {
             throw mapDrizzleError(error, operation, this.dialect);
+        } finally {
+            this.logger.endPerformLog(start);
         }
     }
 

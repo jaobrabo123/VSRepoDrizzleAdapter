@@ -1,5 +1,5 @@
 import { is, Table } from "drizzle-orm";
-import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
+import { AdapterErrorCode, VSLogLevel, VSRepoAdapterError } from "vsrepo";
 import { DrizzleAdapterConfig } from "../types/drizzle-adapter-config.type.js";
 import { DrizzleDbLike } from "../types/drizzle-db-like.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
@@ -7,6 +7,7 @@ import { SupportedDialects } from "../types/supported-dialects.type.js";
 import { isPlainObject } from "./is-plain-object.validator.js";
 
 const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set(["postgresql", "sqlite", "cockroach"]);
+const VALID_LOG_LEVELS = new Set(Object.values(VSLogLevel).filter((v): v is number => typeof v === "number"));
 
 /**
  * Validates the two arguments received by `DrizzleAdapter`'s constructor
@@ -27,7 +28,10 @@ const SUPPORTED_DIALECTS: ReadonlySet<SupportedDialects> = new Set(["postgresql"
  *    catches a typo'd/mismatched `queryKey` in the constructor, not three
  *    calls later inside `findOne` (code `MODEL_NOT_FOUND`);
  *  - `config.relationsSchema`, when provided, is a plain object (the shape
- *    returned by Drizzle's `defineRelations()`) (code `INVALID_ADAPTER_CONFIG`).
+ *    returned by Drizzle's `defineRelations()`) (code `INVALID_ADAPTER_CONFIG`);
+ *  - `config.logLevel`, when provided, is a valid `VSLogLevel` (code `INVALID_ADAPTER_CONFIG`);
+ *  - `config.logSlowThresholdMs`, when provided, is a `number` greater than 0 or a `boolean`
+ *    (code `INVALID_ADAPTER_CONFIG`).
  */
 export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
     db: unknown,
@@ -60,7 +64,10 @@ export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
         );
     }
 
-    const { table, dialect, queryKey, relationsSchema } = config as DrizzleAdapterConfig<T, K>;
+    const { table, dialect, queryKey, relationsSchema, logLevel, logSlowThresholdMs } = config as DrizzleAdapterConfig<
+        T,
+        K
+    >;
 
     if (!is(table, Table)) {
         throw new VSRepoAdapterError(
@@ -94,6 +101,26 @@ export function validateDrizzleAdapterConfig<T, K extends DrizzleDbLike>(
             "Invalid constructor config (relationsSchema): expected the object returned by Drizzle's " +
                 "'defineRelations()' (the same one passed to 'drizzle(client, { relations })'), mapping each " +
                 "table's schema export key to its '{ table, name, relations }' config.",
+            AdapterErrorCode.INVALID_ADAPTER_CONFIG,
+            null,
+        );
+    }
+
+    if (logLevel !== undefined && !VALID_LOG_LEVELS.has(logLevel)) {
+        throw new VSRepoAdapterError(
+            `Invalid constructor config (logLevel): must be a valid VSLogLevel value (${[...VALID_LOG_LEVELS].join(", ")}).`,
+            AdapterErrorCode.INVALID_ADAPTER_CONFIG,
+            null,
+        );
+    }
+
+    if (
+        logSlowThresholdMs !== undefined &&
+        typeof logSlowThresholdMs !== "boolean" &&
+        (typeof logSlowThresholdMs !== "number" || logSlowThresholdMs <= 0)
+    ) {
+        throw new VSRepoAdapterError(
+            "Invalid constructor config (logSlowThresholdMs): must be a number greater than 0, or a boolean.",
             AdapterErrorCode.INVALID_ADAPTER_CONFIG,
             null,
         );

@@ -33,7 +33,7 @@
  */
 
 import { and, eq, notInArray } from "drizzle-orm";
-import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
+import { AdapterErrorCode, VSLogger, VSRepoAdapterError } from "vsrepo";
 import { DrizzleTransactionLike } from "../types/drizzle-transaction-like.type.js";
 import { PlainObject } from "../types/plain-object.type.js";
 import { ResolvedRelation } from "../types/resolved-relation.type.js";
@@ -87,10 +87,12 @@ export function splitWritePayload(
 
 async function resolveFkHereField(
     tx: DrizzleTransactionLike,
+    key: string,
     relation: ResolvedRelation,
     field: PlainObject | null,
     currentFkValue: unknown,
     ownerIsBeingInsertedNow: boolean,
+    logger: VSLogger,
 ): Promise<unknown> {
     const relatedTable = relation.table as unknown as PlainObject;
     const pkColumn = relatedTable[relation.relatedPk];
@@ -103,11 +105,19 @@ async function resolveFkHereField(
                 null,
             );
         }
-        if (relation.mode === "mto") return null;
+        if (relation.mode === "mto") {
+            logger.logDebug(`Relation '${key}' (mto): disconnecting (set to null).`);
+            return null;
+        }
 
         // relation.mode === "oto"
         if (relation.restriction === "set" && currentFkValue != undefined && !ownerIsBeingInsertedNow) {
+            logger.logDebug(
+                `Relation '${key}' (oto, fkHere, restriction=set): disconnecting — deleting the previously-related row.`,
+            );
             await (tx as any).delete(relation.table).where(eq(pkColumn, currentFkValue));
+        } else {
+            logger.logDebug(`Relation '${key}' (oto, fkHere): disconnecting (set to null).`);
         }
 
         return null;
@@ -123,12 +133,22 @@ async function resolveFkHereField(
             if (relation.restriction === "set") {
                 const dataWithoutPk = omitKey(field, relation.relatedPk);
                 if (Object.keys(dataWithoutPk).length > 0) {
+                    logger.logDebug(`Relation '${key}' (${relation.mode}, fkHere): updating the already-related row.`);
                     await (tx as any).update(relation.table).set(dataWithoutPk).where(eq(pkColumn, currentFkValue));
+                } else {
+                    logger.logDebug(
+                        `Relation '${key}' (${relation.mode}, fkHere): keeping the already-related row as-is.`,
+                    );
                 }
+            } else {
+                logger.logDebug(
+                    `Relation '${key}' (${relation.mode}, fkHere, restriction=add): keeping the already-related row as-is.`,
+                );
             }
             return currentFkValue;
         }
 
+        logger.logDebug(`Relation '${key}' (${relation.mode}, fkHere): no pk given — creating a new related row.`);
         const [created] = await (tx as any)
             .insert(relation.table)
             .values(field)
@@ -143,12 +163,22 @@ async function resolveFkHereField(
         .limit(1);
 
     if (existing.length === 0) {
+        logger.logDebug(
+            `Relation '${key}' (${relation.mode}, fkHere): pk '${String(pkValue)}' not found — inserting it as a new row.`,
+        );
         await (tx as any).insert(relation.table).values(field);
     } else if (relation.restriction === "set") {
         const dataWithoutPk = omitKey(field, relation.relatedPk);
         if (Object.keys(dataWithoutPk).length > 0) {
+            logger.logDebug(
+                `Relation '${key}' (${relation.mode}, fkHere): pk '${String(pkValue)}' already exists — updating it.`,
+            );
             await (tx as any).update(relation.table).set(dataWithoutPk).where(eq(pkColumn, pkValue));
         }
+    } else {
+        logger.logDebug(
+            `Relation '${key}' (${relation.mode}, fkHere, restriction=add): pk '${String(pkValue)}' already exists — linking without changes.`,
+        );
     }
 
     return pkValue;
@@ -161,6 +191,7 @@ export async function resolveFkHereFields(
     scalarFields: PlainObject,
     currentRow: PlainObject | undefined,
     ownerIsBeingInsertedNow: boolean,
+    logger: VSLogger,
 ): Promise<void> {
     for (const [key, relation, value] of entries) {
         if (value !== null && typeof value !== "object") {
@@ -174,10 +205,12 @@ export async function resolveFkHereFields(
         const currentFkValue = currentRow?.[relation.fkHere as string];
         const resolved = await resolveFkHereField(
             tx,
+            key,
             relation,
             value as PlainObject | null,
             currentFkValue,
             ownerIsBeingInsertedNow,
+            logger,
         );
 
         scalarFields[relation.fkHere as string] = resolved;
@@ -191,10 +224,12 @@ export async function resolveFkHereFields(
  */
 async function resolveOtmField(
     tx: DrizzleTransactionLike,
+    key: string,
     relation: ResolvedRelation,
     items: PlainObject[],
     ownPkValue: unknown,
     ownerJustInserted: boolean,
+    logger: VSLogger,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const fkColumn = relatedTable[relation.fkThere as string];
@@ -210,6 +245,10 @@ async function resolveOtmField(
             withPk.push(item);
         }
     }
+
+    logger.logDebug(
+        `Relation '${key}' (otm): resolving ${items.length} item(s) — ${withoutPk.length} to insert, ${withPk.length} to link/update.`,
+    );
 
     // Every pk that ends up part of this write — whether freshly generated (`withoutPk`) or
     // given up front (`withPk`) — has to be tracked BEFORE the `restriction: "set"` cleanup
@@ -227,6 +266,9 @@ async function resolveOtmField(
         }
     }
 
+    let updatedCount = 0;
+    let insertedFromWithPkCount = 0;
+
     for (const item of withPk) {
         const pkValue = item[relation.relatedPk];
         connectedIds.push(pkValue);
@@ -239,12 +281,14 @@ async function resolveOtmField(
 
         if (existing.length === 0) {
             await (tx as any).insert(relation.table).values({ ...item, [relation.fkThere as string]: ownPkValue });
+            insertedFromWithPkCount++;
             continue;
         }
 
         const setData = { ...omitKey(item, relation.relatedPk), [relation.fkThere as string]: ownPkValue };
 
         await (tx as any).update(relation.table).set(setData).where(eq(pkColumn, pkValue));
+        updatedCount++;
     }
 
     if (relation.restriction === "set" && !ownerJustInserted) {
@@ -254,6 +298,14 @@ async function resolveOtmField(
                 : eq(fkColumn, ownPkValue);
 
         await (tx as any).delete(relation.table).where(condition);
+        logger.logDebug(
+            `Relation '${key}' (otm, restriction=set): inserted ${withoutPk.length + insertedFromWithPkCount}, ` +
+                `updated ${updatedCount} item(s); removing any related row no longer present in the payload.`,
+        );
+    } else {
+        logger.logDebug(
+            `Relation '${key}' (otm, restriction=${relation.restriction}): inserted ${withoutPk.length + insertedFromWithPkCount}, updated ${updatedCount} item(s).`,
+        );
     }
 }
 
@@ -270,10 +322,12 @@ async function resolveOtmField(
  */
 async function resolveMtmField(
     tx: DrizzleTransactionLike,
+    key: string,
     relation: ResolvedRelation,
     items: PlainObject[],
     ownPkValue: unknown,
     ownerJustInserted: boolean,
+    logger: VSLogger,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const throughTable = relation.through as unknown as PlainObject;
@@ -291,6 +345,10 @@ async function resolveMtmField(
             withPk.push(item);
         }
     }
+
+    logger.logDebug(
+        `Relation '${key}' (mtm): resolving ${items.length} item(s) — ${withoutPk.length} to create, ${withPk.length} to link.`,
+    );
 
     // Same reasoning as `resolveOtmField`: every pk that ends up linked — freshly
     // generated or given up front — has to be tracked BEFORE the `restriction: "set"`
@@ -350,16 +408,25 @@ async function resolveMtmField(
         // Deletes only the join rows (the link) — the related entity itself is
         // never deleted here, unlike `resolveOtmField`'s `"set"` cleanup.
         await (tx as any).delete(relation.through).where(condition);
+        logger.logDebug(
+            `Relation '${key}' (mtm, restriction=set): linked ${connectedIds.length} item(s); unlinking any join row no longer present in the payload.`,
+        );
+    } else {
+        logger.logDebug(
+            `Relation '${key}' (mtm, restriction=${relation.restriction}): linked ${connectedIds.length} item(s).`,
+        );
     }
 }
 
 /** Resolves one `oto` field whose FK lives on the related table. */
 async function resolveOtoFkThereField(
     tx: DrizzleTransactionLike,
+    key: string,
     relation: ResolvedRelation,
     field: PlainObject | null,
     ownPkValue: unknown,
     ownerJustInserted: boolean,
+    logger: VSLogger,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const fkColumn = relatedTable[relation.fkThere as string];
@@ -376,13 +443,21 @@ async function resolveOtoFkThereField(
 
         if (!ownerJustInserted) {
             if (relation.restriction === "set") {
+                logger.logDebug(
+                    `Relation '${key}' (oto, fkThere, restriction=set): disconnecting — deleting the related row.`,
+                );
                 await (tx as any).delete(relation.table).where(eq(fkColumn, ownPkValue));
             } else {
+                logger.logDebug(
+                    `Relation '${key}' (oto, fkThere, restriction=add): disconnecting — clearing the FK on the related row.`,
+                );
                 await (tx as any)
                     .update(relation.table)
                     .set({ [fkColumn]: null })
                     .where(eq(fkColumn, ownPkValue));
             }
+        } else {
+            logger.logDebug(`Relation '${key}' (oto, fkThere): nothing to disconnect — owner row was just inserted.`);
         }
 
         return;
@@ -406,8 +481,12 @@ async function resolveOtoFkThereField(
             : await (tx as any).select({ pk: pkColumn }).from(relation.table).where(eq(fkColumn, ownPkValue)).limit(1);
 
         if (!otoRel) {
+            logger.logDebug(
+                `Relation '${key}' (oto, fkThere): no pk given and no related row exists yet — creating a new one.`,
+            );
             await (tx as any).insert(relation.table).values({ ...field, [relation.fkThere as string]: ownPkValue });
         } else {
+            logger.logDebug(`Relation '${key}' (oto, fkThere): updating the already-related row.`);
             await resolveSetData(otoRel.pk);
         }
 
@@ -420,8 +499,14 @@ async function resolveOtoFkThereField(
             .limit(1);
 
         if (existing.length === 0) {
+            logger.logDebug(
+                `Relation '${key}' (oto, fkThere): pk '${String(pkValue)}' not found — inserting it as a new row.`,
+            );
             await (tx as any).insert(relation.table).values({ ...field, [relation.fkThere as string]: ownPkValue });
         } else {
+            logger.logDebug(
+                `Relation '${key}' (oto, fkThere): pk '${String(pkValue)}' already exists — linking/updating it.`,
+            );
             await resolveSetData(pkValue);
         }
     }
@@ -441,6 +526,7 @@ export async function resolveFkThereFields(
     entries: [string, ResolvedRelation, unknown][],
     ownPkValue: unknown,
     ownerJustInserted: boolean,
+    logger: VSLogger,
 ): Promise<void> {
     for (const [key, relation, value] of entries) {
         if (relation.mode === "otm" || relation.mode === "mtm") {
@@ -453,9 +539,9 @@ export async function resolveFkThereFields(
             }
 
             if (relation.mode === "mtm") {
-                await resolveMtmField(tx, relation, value as PlainObject[], ownPkValue, ownerJustInserted);
+                await resolveMtmField(tx, key, relation, value as PlainObject[], ownPkValue, ownerJustInserted, logger);
             } else {
-                await resolveOtmField(tx, relation, value as PlainObject[], ownPkValue, ownerJustInserted);
+                await resolveOtmField(tx, key, relation, value as PlainObject[], ownPkValue, ownerJustInserted, logger);
             }
             continue;
         }
@@ -468,6 +554,14 @@ export async function resolveFkThereFields(
             );
         }
 
-        await resolveOtoFkThereField(tx, relation, value as PlainObject | null, ownPkValue, ownerJustInserted);
+        await resolveOtoFkThereField(
+            tx,
+            key,
+            relation,
+            value as PlainObject | null,
+            ownPkValue,
+            ownerJustInserted,
+            logger,
+        );
     }
 }
