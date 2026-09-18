@@ -36,6 +36,7 @@
 - [Métodos atômicos e de agregação](#métodos-atômicos-e-de-agregação)
 - [`createMany`/`createManyReturning`/`updateMany`/`updateManyReturning` não suportam nested writes](#createmanycreatemanyreturningupdatemanyupdatemanyreturning-não-suportam-nested-writes)
 - [Comportamento por dialeto](#comportamento-por-dialeto)
+- [Suporte a `distinct` no `findMany` (só `postgresql`)](#suporte-a-distinct-no-findmany-só-postgresql)
 - [Transactions](#transactions)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Requisitos](#requisitos)
@@ -392,6 +393,41 @@ O adapter suporta três dialetos SQL, cada um com comportamento ligeiramente dif
 
 O dialeto é auto-detectado a partir da própria classe da `table` no Drizzle (`PgTable`/`CockroachTable`/`SQLiteTable`) quando `dialect` não é informado na config — ver [Config do construtor](#config-do-construtor). Um `dialect` explícito sempre sobrescreve a detecção.
 
+## Suporte a `distinct` no `findMany` (só `postgresql`)
+
+`findMany` aceita uma option `distinct` — um array com os nomes dos campos pra deduplicar o resultado — mas **só pro dialeto `postgresql`**:
+
+```typescript
+class UserRepository extends VSRepository<User, string> {
+    constructor() {
+        super({...});
+    }
+
+    @DynamicMethod()
+    declare findByActiveIsTrueDistinctRole: () => Promise<User[]>;
+}
+
+const userRepository = new UserRepository();
+
+// Um registro por 'role':
+const oneUserPerRole = await userRepository.findByActiveIsTrueDistinctRole();
+```
+
+Passar `distinct` quando o dialeto do adapter é `sqlite` ou `cockroach` lança um `VSRepoAdapterError` (code `NOT_SUPPORTED`).
+
+A API de query relacional do Drizzle (`db.query[key].findMany`) não tem opção `distinct` própria, então o adapter implementa isso do mesmo jeito que já faz pros filtros `_every`/`_none` (ver a linha de `_every`/`_none` em [Limitações conhecidas](#limitações-conhecidas)): primeiro roda `db.selectDistinctOn(...)` pelo query builder **core** do Drizzle pra buscar só as PKs das linhas já deduplicadas, depois roda de novo a query relacional filtrando por essas PKs — assim `select`/`relations` continuam funcionando normalmente no resultado. Isso custa um round-trip a mais, igual `_every`/`_none`.
+
+Quando `distinct` e `order` são informados juntos, `order` decide **qual registro "vence" em cada grupo do `distinct`**, não só a ordem final do resultado — isso espelha a semântica do próprio `SELECT DISTINCT ON (...) ... ORDER BY ...` do Postgres, já que é exatamente isso que roda por baixo dos panos:
+
+```typescript
+// Mantém o post MAIS RECENTE de cada usuário:
+const latestPostPerUser = await postRepository.findByDistinctUserIdOrderByCreatedAtDesc();
+```
+
+`pagination` (`limit`/`offset`) é aplicada **depois** da deduplicação, sobre o conjunto já distinto — não sobre as linhas originais antes do `distinct` colapsá-las.
+
+`distinct` precisa ser um array não-vazio com nomes de colunas reais da tabela — um array vazio lança `VSRepoAdapterError` (code `INVALID_DATA`), e um nome de campo desconhecido lança `VSRepoAdapterError` (code `FIELD_NOT_FOUND`).
+
 ## Transactions
 
 **Todos** os métodos aceitam `options.db` e executam a operação no client/transaction passado — a diferença está em **como** cada um o trata:
@@ -445,7 +481,7 @@ O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra ca
 
 | Limitação | Detalhes |
 | --- | --- |
-| Sem suporte a `distinct` | A API de query relacional do Drizzle (`db.query[key].findMany`) não tem opção `distinct` — passar `distinct` no `findMany` lança `NOT_SUPPORTED`. |
+| `distinct` só no `postgresql` | O `distinct` do `findMany` usa `db.selectDistinctOn(...)`, que é específico do Postgres — passar `distinct` pra `sqlite`/`cockroach` lança `NOT_SUPPORTED`. Ver [Suporte a `distinct` no `findMany`](#suporte-a-distinct-no-findmany-só-postgresql). |
 | Sem `timeoutMs` em transactions | A API de transaction do Drizzle não expõe um parâmetro de timeout — passar `timeoutMs` lança `NOT_SUPPORTED`. |
 | Filtros quantificadores `_every`/`_none` | Suportados, mas disparam um round-trip extra: uma query SQL de prefetch encontra as PKs que casam, então a API de query relacional filtra por essas PKs. |
 | `select` com campos de relação marcados como `true` | Um campo de relação marcado como `true` no `select` só é enviado pro `with` se o adapter conseguir identificar isso — via `relationsSchema` (qualquer profundidade) ou o `relations` do construtor (só primeiro nível) — caso contrário, é tratado como coluna escalar e a query falha. Sem `relationsSchema`, relations aninhadas marcadas como `true` dentro de um objeto `select` são sempre tratadas como colunas (especifique um campo ou use a option `relations`). |

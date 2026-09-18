@@ -36,6 +36,7 @@
 - [Atomic and aggregation methods](#atomic-and-aggregation-methods)
 - [`createMany`/`createManyReturning`/`updateMany`/`updateManyReturning` don't support nested writes](#createmanycreatemanyreturningupdatemanyupdatemanyreturning-dont-support-nested-writes)
 - [Dialect-specific behavior](#dialect-specific-behavior)
+- [`findMany` `distinct` support (`postgresql` only)](#findmany-distinct-support-postgresql-only)
 - [Transactions](#transactions)
 - [Known limitations](#known-limitations)
 - [Requirements](#requirements)
@@ -392,6 +393,41 @@ The adapter supports three SQL dialects, each with slightly different behavior:
 
 The dialect is auto-detected from the `table`'s own Drizzle class (`PgTable`/`CockroachTable`/`SQLiteTable`) when `dialect` isn't given in the config — see [Constructor config](#constructor-config). An explicit `dialect` always overrides detection.
 
+## `findMany` `distinct` support (`postgresql` only)
+
+`findMany` accepts a `distinct` option — an array of field names to deduplicate the result by — but **only for the `postgresql` dialect**:
+
+```typescript
+class UserRepository extends VSRepository<User, string> {
+    constructor() {
+        super({...});
+    }
+
+    @DynamicMethod()
+    declare findByActiveIsTrueDistinctRole: () => Promise<User[]>;
+}
+
+const userRepository = new UserRepository();
+
+// One record per 'role':
+const oneUserPerRole = await userRepository.findByActiveIsTrueDistinctRole();
+```
+
+Passing `distinct` when the adapter's dialect is `sqlite` or `cockroach` throws a `VSRepoAdapterError` (code `NOT_SUPPORTED`).
+
+Drizzle's relational query API (`db.query[key].findMany`) has no `distinct` option of its own, so the adapter implements this the same way it already does for `_every`/`_none` filters (see the `_every`/`_none` row in [Known limitations](#known-limitations)): it first runs `db.selectDistinctOn(...)` through Drizzle's **core** query builder to fetch just the deduplicated rows' primary keys, then re-runs the relational query filtered by those PKs — so `select`/`relations` still work normally on the result. This costs one extra round-trip, same as `_every`/`_none`.
+
+When both `distinct` and `order` are given, `order` decides **which row wins each `distinct` group**, not just the final result order — this mirrors Postgres' own `SELECT DISTINCT ON (...) ... ORDER BY ...` semantics, since that's exactly what runs under the hood:
+
+```typescript
+// Keeps each user's MOST RECENT post:
+const latestPostPerUser = await postRepository.findByDistinctUserIdOrderByCreatedAtDesc();
+```
+
+`pagination` (`limit`/`offset`) is applied **after** deduplication, on the distinct set — not on the raw rows before `distinct` collapses them.
+
+`distinct` must be a non-empty array of real column names on the table — an empty array throws `VSRepoAdapterError` (code `INVALID_DATA`), and an unknown field name throws `VSRepoAdapterError` (code `FIELD_NOT_FOUND`).
+
 ## Transactions
 
 **Every** method accepts `options.db` and runs its operation on the client/transaction you pass — the difference is in **how** each one treats it:
@@ -445,7 +481,7 @@ await userRepository.transaction(async tx => {
 
 | Limitation | Details |
 | --- | --- |
-| No `distinct` support | Drizzle's relational query API (`db.query[key].findMany`) has no `distinct` option — passing `distinct` to `findMany` throws `NOT_SUPPORTED`. |
+| `distinct` only on `postgresql` | `findMany`'s `distinct` uses `db.selectDistinctOn(...)`, which is Postgres-specific — passing `distinct` for `sqlite`/`cockroach` throws `NOT_SUPPORTED`. See [`findMany` `distinct` support](#findmany-distinct-support-postgresql-only). |
 | No `timeoutMs` in transactions | Drizzle's transaction API doesn't expose a timeout parameter — passing `timeoutMs` throws `NOT_SUPPORTED`. |
 | `_every`/`_none` quantifier filters | Supported, but trigger an extra round-trip: a SQL prefetch query finds matching PKs, then the relational query API filters by those PKs. |
 | `select` with `true`-marked relation fields | A relation field marked `true` in `select` is only routed to `with` if the adapter can tell it's a relation — via `relationsSchema` (any depth) or the constructor's `relations` (first level only) — otherwise it's treated as a scalar column and the query fails. Without `relationsSchema`, nested relations marked `true` inside a `select` object are always treated as columns (spell out a field or use the `relations` option). |

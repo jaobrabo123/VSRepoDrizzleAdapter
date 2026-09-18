@@ -13,9 +13,16 @@ All notable changes to this project will be documented in this file.
   - Writes (`create`/`update`/`upsert`/`save`): creates/upserts related rows and links them via `through`, deduplicating existing links; `restriction: "set"` cleanup only removes the join-table row, never the related entity itself
   - When `relationsSchema` (Drizzle's `defineRelations()`) is configured, `mode: "mtm"` and its `through`/`throughFkHere`/`throughFkThere` are derived automatically from a `.through(...)` join, same as the existing derivation for `otm`/`mto`/`oto`
   - `dev/drizzle/schema.ts`/`db.ts` gained a `tagTable`/`postTagTable` example (`postTable.tags`, many-to-many) demonstrating the new mode end-to-end
+- `findMany`'s `distinct` option is now supported for the `postgresql` dialect, via `db.selectDistinctOn(...)` — previously it always threw `NOT_SUPPORTED` regardless of dialect
+  - Implemented through the same pk-prefetch strategy already used for `_every`/`_none`: a `db.selectDistinctOn(...)` query (core query builder) finds the deduplicated rows' PKs, then the relational query API re-fetches them by PK, so `select`/`relations` still apply normally
+  - When both `distinct` and `order` are given, `order` also decides which row wins each `distinct` group (not just the final result order) — mirrors Postgres' `SELECT DISTINCT ON (...) ... ORDER BY ...` semantics
+  - `pagination` is applied after deduplication, on the distinct set
+  - `sqlite`/`cockroach` still throw `NOT_SUPPORTED` for `distinct`, since `selectDistinctOn` is Postgres-specific
+  - New `src/parsers/distinct-on.parser.ts` (`parseDistinctOn`) builds the `selectDistinctOn` column list and its required leading `ORDER BY`; throws `VSRepoAdapterError` (code `INVALID_DATA`) for an empty `distinct` array, or (code `FIELD_NOT_FOUND`) for an unknown field
 
 ### Documentation
 - READMEs (English/pt-BR): removed the "`mtm` not supported" notice, documented `mode: "mtm"` and the new `through`/`throughFkHere`/`throughFkThere` config, and updated the derivation/restriction/write-resolution tables accordingly
+- READMEs (English/pt-BR): added a "`findMany` `distinct` support (`postgresql` only)" section, and updated the "Known limitations" table entry for `distinct` accordingly
 
 ---
 
@@ -26,9 +33,16 @@ All notable changes to this project will be documented in this file.
   - Escritas (`create`/`update`/`upsert`/`save`): cria/faz upsert das linhas relacionadas e as vincula via `through`, deduplicando vínculos já existentes; a limpeza do `restriction: "set"` só remove a linha da tabela de junção, nunca a entidade relacionada em si
   - Com `relationsSchema` (`defineRelations()` do Drizzle) configurado, `mode: "mtm"` e seu `through`/`throughFkHere`/`throughFkThere` são derivados automaticamente de um join `.through(...)`, igual à derivação já existente pra `otm`/`mto`/`oto`
   - `dev/drizzle/schema.ts`/`db.ts` ganharam um exemplo `tagTable`/`postTagTable` (`postTable.tags`, many-to-many) demonstrando o novo modo de ponta a ponta
+- A option `distinct` do `findMany` agora é suportada pro dialeto `postgresql`, via `db.selectDistinctOn(...)` — antes sempre lançava `NOT_SUPPORTED`, independente do dialeto
+  - Implementado com a mesma estratégia de pré-busca de PKs já usada pra `_every`/`_none`: uma query `db.selectDistinctOn(...)` (query builder core) busca as PKs das linhas já deduplicadas, e a API de query relacional re-busca essas linhas por PK, então `select`/`relations` continuam funcionando normalmente
+  - Quando `distinct` e `order` são informados juntos, `order` também decide qual registro "vence" em cada grupo do `distinct` (não só a ordem final do resultado) — espelha a semântica do `SELECT DISTINCT ON (...) ... ORDER BY ...` do Postgres
+  - `pagination` é aplicada depois da deduplicação, sobre o conjunto já distinto
+  - `sqlite`/`cockroach` continuam lançando `NOT_SUPPORTED` pro `distinct`, já que `selectDistinctOn` é específico do Postgres
+  - Novo `src/parsers/distinct-on.parser.ts` (`parseDistinctOn`) monta a lista de colunas do `selectDistinctOn` e o `ORDER BY` inicial obrigatório; lança `VSRepoAdapterError` (code `INVALID_DATA`) pra um array `distinct` vazio, ou (code `FIELD_NOT_FOUND`) pra um campo desconhecido
 
 ### Documentação
 - READMEs (inglês/pt-BR): removido o aviso de "`mtm` não suportado", documentado o `mode: "mtm"` e a nova config `through`/`throughFkHere`/`throughFkThere`, e atualizadas as tabelas de derivação/restriction/resolução de escrita de acordo
+- READMEs (inglês/pt-BR): adicionada uma seção "Suporte a `distinct` no `findMany` (só `postgresql`)", e atualizada a entrada de `distinct` na tabela de "Limitações conhecidas" de acordo
 
 ---
 
@@ -193,4 +207,3 @@ All notable changes to this project will be documented in this file.
 ### Corrigido
 - O adapter agora suporta apenas os dialects `postgres`, `cockroach` e `sqlite` — `mysql` estava incorretamente listado como suportado e foi removido
 - Corrigido o `relations writes` para não apagar as relations que acabaram de ser inseridas
-
