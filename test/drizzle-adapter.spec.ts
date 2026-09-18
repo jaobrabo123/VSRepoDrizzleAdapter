@@ -117,12 +117,89 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             expect(result.map(u => u.name)).toEqual(["Ana", "Bia"]);
         });
 
-        it("findMany lança 'VSRepoAdapterError' (code 'NOT_SUPPORTED') quando 'distinct' é informado", async () => {
+        it("findMany lança 'VSRepoAdapterError' (code 'NOT_SUPPORTED') quando 'distinct' é informado e o dialect não é 'postgresql'", async () => {
+            const sqliteUserAdapter = new DrizzleAdapter<User>(db, {
+                queryKey: "userTable",
+                table: userTable,
+                dialect: "sqlite",
+            });
+
+            await expect(sqliteUserAdapter.findMany({}, { distinct: ["name"] })).rejects.toThrow(VSRepoAdapterError);
+
             try {
-                await userAdapter.findMany({}, { distinct: ["name"] });
+                await sqliteUserAdapter.findMany({}, { distinct: ["name"] });
+            } catch (err) {
+                expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.NOT_SUPPORTED);
+            }
+        });
+
+        it("findMany aplica 'distinct' via 'selectDistinctOn' quando o dialect é 'postgresql', deduplicando pelo(s) campo(s) informado(s)", async () => {
+            await createUser({ email: "ana@example.com", name: "Ana", role: Role.USER });
+            await createUser({ email: "bruno@example.com", name: "Bruno", role: Role.USER });
+            await createUser({ email: "carla@example.com", name: "Carla", role: Role.ADMIN });
+
+            const result = await userAdapter.findMany({}, { distinct: ["role"] });
+
+            expect(result).toHaveLength(2);
+            expect(new Set(result.map(u => u.role))).toEqual(new Set([Role.USER, Role.ADMIN]));
+        });
+
+        it("findMany usa 'order' pra decidir qual registro de cada grupo do 'distinct' é retornado, e pra ordenar o resultado final", async () => {
+            await createUser({ email: "bruno@example.com", name: "Bruno", role: Role.USER });
+            await createUser({ email: "ana@example.com", name: "Ana", role: Role.USER });
+            await createUser({ email: "carla@example.com", name: "Carla", role: Role.ADMIN });
+
+            const result = await userAdapter.findMany({}, { distinct: ["role"], order: { name: "asc" } });
+
+            // Dentro de cada grupo de 'role', o 'order' decide o "vencedor" (nome
+            // alfabeticamente menor) — e o mesmo 'order' também ordena a lista final.
+            expect(result.map(u => u.name)).toEqual(["Ana", "Carla"]);
+        });
+
+        it("findMany + 'distinct' mantém o registro mais recente de cada grupo quando 'order' pede 'desc'", async () => {
+            const postAdapter = new DrizzleAdapter<Post>(db, { queryKey: "postTable", table: postTable });
+            const user = await createUser({ email: "ana@example.com" });
+
+            const older = await createPost(user.id, { title: "Post antigo" });
+            await new Promise(resolve => setTimeout(resolve, 10));
+            const newer = await createPost(user.id, { title: "Post novo" });
+
+            const result = await postAdapter.findMany({}, { distinct: ["userId"], order: { createdAt: "desc" } });
+
+            expect(result).toHaveLength(1);
+            expect(result[0]?.id).toBe(newer.id);
+            expect(result[0]?.id).not.toBe(older.id);
+        });
+
+        it("findMany + 'distinct' respeita 'pagination' (aplicada após a deduplicação)", async () => {
+            await createUser({ email: "ana@example.com", name: "Ana", role: Role.USER });
+            await createUser({ email: "bruno@example.com", name: "Bruno", role: Role.USER });
+            await createUser({ email: "carla@example.com", name: "Carla", role: Role.ADMIN });
+
+            const result = await userAdapter.findMany(
+                {},
+                { distinct: ["role"], order: { name: "asc" }, pagination: { limit: 1 } },
+            );
+
+            expect(result).toHaveLength(1);
+            expect(result[0]?.name).toBe("Ana");
+        });
+
+        it("findMany + 'distinct' lança 'VSRepoAdapterError' (code 'INVALID_DATA') quando 'distinct' é um array vazio", async () => {
+            try {
+                await userAdapter.findMany({}, { distinct: [] });
             } catch (err) {
                 expect(err).toBeInstanceOf(VSRepoAdapterError);
-                expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.NOT_SUPPORTED);
+                expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.INVALID_DATA);
+            }
+        });
+
+        it("findMany + 'distinct' lança 'VSRepoAdapterError' (code 'FIELD_NOT_FOUND') quando um campo de 'distinct' não existe na tabela", async () => {
+            try {
+                await userAdapter.findMany({}, { distinct: ["nope" as keyof User] });
+            } catch (err) {
+                expect(err).toBeInstanceOf(VSRepoAdapterError);
+                expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.FIELD_NOT_FOUND);
             }
         });
     });
