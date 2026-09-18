@@ -5,7 +5,7 @@ import { defineRelations } from "drizzle-orm";
 import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import { createFakeDb } from "./helpers/fake-db.helper.js";
-import { addressTable, categoryTable, postTable, userTable } from "../dev/drizzle/schema.js";
+import { addressTable, categoryTable, postTable, postTagTable, tagTable, userTable } from "../dev/drizzle/schema.js";
 import { SupportedDialects } from "../src/index.js";
 
 describe("DrizzleAdapter — validação do client Drizzle", () => {
@@ -468,6 +468,135 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
         });
     });
 
+    describe("mode 'mtm'", () => {
+        it("é lançado quando vem com 'fkHere'/'fkThere' (não aceitos nesse mode)", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "add",
+                            table: tagTable,
+                            fkThere: "postId",
+                            through: postTagTable,
+                            throughFkHere: "postId",
+                            throughFkThere: "tagId",
+                        },
+                    },
+                });
+            }).toThrow(VSRepoAdapterError);
+        });
+
+        it("é lançado quando 'through' está ausente", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: { mode: "mtm", restriction: "add", table: tagTable, throughFkThere: "tagId" },
+                    },
+                });
+            }).toThrow(VSRepoAdapterError);
+        });
+
+        it("é lançado quando 'through' não é uma instância de 'Table'", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "add",
+                            table: tagTable,
+                            through: {},
+                            throughFkHere: "postId",
+                            throughFkThere: "tagId",
+                        },
+                    },
+                });
+            }).toThrow(VSRepoAdapterError);
+        });
+
+        it("é lançado quando 'throughFkHere' não é uma coluna de 'through'", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "add",
+                            table: tagTable,
+                            through: postTagTable,
+                            throughFkHere: "naoExiste",
+                            throughFkThere: "tagId",
+                        },
+                    },
+                });
+            }).toThrow(VSRepoAdapterError);
+        });
+
+        it("é lançado quando 'throughFkThere' não é uma coluna de 'through'", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "add",
+                            table: tagTable,
+                            through: postTagTable,
+                            throughFkHere: "postId",
+                            throughFkThere: "naoExiste",
+                        },
+                    },
+                });
+            }).toThrow(VSRepoAdapterError);
+        });
+
+        it("é lançado quando 'throughFkHere' e 'throughFkThere' apontam pra mesma coluna", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "add",
+                            table: tagTable,
+                            through: postTagTable,
+                            throughFkHere: "postId",
+                            throughFkThere: "postId",
+                        },
+                    },
+                });
+            }).toThrow(VSRepoAdapterError);
+        });
+
+        it("aceita uma relation 'mtm' válida (tags, via postTagTable)", () => {
+            expect(() => {
+                new DrizzleAdapter(makeDb(), {
+                    table: postTable,
+                    queryKey: "postTable",
+                    relations: {
+                        tags: {
+                            mode: "mtm",
+                            restriction: "set",
+                            table: tagTable,
+                            through: postTagTable,
+                            throughFkHere: "postId",
+                            throughFkThere: "tagId",
+                        },
+                    },
+                });
+            }).not.toThrow();
+        });
+    });
+
     it("é lançado quando a tabela relacionada não tem nenhuma coluna primary key", () => {
         const tableWithoutPk = pgTable("no_pk", { name: varchar({ length: 10 }) });
 
@@ -539,27 +668,40 @@ describe("DrizzleAdapter — validação de 'relations'", () => {
 
 describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a partir do defineRelations)", () => {
     function makeDb() {
-        return createFakeDb(["userTable", "postTable", "addressTable", "categoryTable"]);
+        return createFakeDb(["userTable", "postTable", "addressTable", "categoryTable", "tagTable"]);
     }
 
     // Mesmo shape de dev/drizzle/db.ts, sem precisar de uma conexão real —
     // 'defineRelations' não toca no banco, só lê o schema.
-    const relationsSchema = defineRelations({ userTable, postTable, addressTable, categoryTable }, r => ({
-        addressTable: {
-            user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
-        },
-        postTable: {
-            category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
-            user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
-        },
-        categoryTable: {
-            posts: r.many.postTable(),
-        },
-        userTable: {
-            address: r.one.addressTable(),
-            posts: r.many.postTable(),
-        },
-    }));
+    const relationsSchema = defineRelations(
+        { userTable, postTable, addressTable, categoryTable, tagTable, postTagTable },
+        r => ({
+            addressTable: {
+                user: r.one.userTable({ from: r.addressTable.userId, to: r.userTable.id }),
+            },
+            postTable: {
+                category: r.one.categoryTable({ from: r.postTable.categoryId, to: r.categoryTable.id }),
+                user: r.one.userTable({ from: r.postTable.userId, to: r.userTable.id }),
+                tags: r.many.tagTable({
+                    from: r.postTable.id.through(r.postTagTable.postId),
+                    to: r.tagTable.id.through(r.postTagTable.tagId),
+                }),
+            },
+            categoryTable: {
+                posts: r.many.postTable(),
+            },
+            userTable: {
+                address: r.one.addressTable(),
+                posts: r.many.postTable(),
+            },
+            tagTable: {
+                posts: r.many.postTable({
+                    from: r.tagTable.id.through(r.postTagTable.tagId),
+                    to: r.postTable.id.through(r.postTagTable.postId),
+                }),
+            },
+        }),
+    );
 
     it("é lançado quando 'relationsSchema' não é um objeto plano", () => {
         expect(() => {
@@ -632,6 +774,28 @@ describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a par
                 queryKey: "postTable",
                 relationsSchema,
                 relations: { category: { restriction: "set" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'mtm' + 'through'/'throughFkHere'/'throughFkThere' de uma relation 'many' com '.through(...)' (postTable.tags)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: postTable,
+                queryKey: "postTable",
+                relationsSchema,
+                relations: { tags: { restriction: "set" } },
+            });
+        }).not.toThrow();
+    });
+
+    it("deriva 'mtm' também no lado inverso (tagTable.posts)", () => {
+        expect(() => {
+            new DrizzleAdapter(makeDb(), {
+                table: tagTable,
+                queryKey: "tagTable",
+                relationsSchema,
+                relations: { posts: { restriction: "add" } },
             });
         }).not.toThrow();
     });

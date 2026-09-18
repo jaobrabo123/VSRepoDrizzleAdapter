@@ -29,12 +29,14 @@
     - [`mode`](#mode)
     - [`restriction`](#restriction)
     - [`fkHere`, `fkThere` e `nullable`](#fkhere-fkthere-e-nullable)
+    - [`through`, `throughFkHere` e `throughFkThere`](#through-throughfkhere-e-throughfkthere)
     - [Como cada método de escrita resolve relations](#como-cada-método-de-escrita-resolve-relations)
   - [`relations` nas options (leitura)](#relations-nas-options-leitura)
 - [`merge`](#merge)
 - [Métodos atômicos e de agregação](#métodos-atômicos-e-de-agregação)
 - [`createMany`/`createManyReturning`/`updateMany`/`updateManyReturning` não suportam nested writes](#createmanycreatemanyreturningupdatemanyupdatemanyreturning-não-suportam-nested-writes)
 - [Comportamento por dialeto](#comportamento-por-dialeto)
+- [Suporte a `distinct` no `findMany` (só `postgresql`)](#suporte-a-distinct-no-findmany-só-postgresql)
 - [Transactions](#transactions)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Requisitos](#requisitos)
@@ -187,20 +189,21 @@ Derivação, por relation:
 | Relation do Drizzle | `mode` derivado | FK derivada |
 | --- | --- | --- |
 | `relationType: "many"` | `"otm"` | `fkThere` — a coluna de FK na tabela relacionada |
+| `relationType: "many"` declarada com `.through(...)` nas colunas de join `from`/`to` | `"mtm"` | `through`/`throughFkHere`/`throughFkThere` — a tabela de junção e suas duas colunas de FK |
 | `relationType: "one"`, coluna de FK na tabela relacionada (ex.: uma 1-1 inferida/invertida, como `userTable.address`) | `"oto"` | `fkThere` |
 | `relationType: "one"`, coluna de FK nesta tabela, unique (1-1, ex.: `addressTable.user`) | `"oto"` | `fkHere` |
 | `relationType: "one"`, coluna de FK nesta tabela, não-unique (ex.: `postTable.user`) | `"mto"` | `fkHere` |
 
-**`nullable` nunca é derivado** — ele é sempre `false` (não-nullable) a menos que você configure explicitamente em `relations`, exatamente como sem `relationsSchema`.
+**`nullable` nunca é derivado** — ele é sempre `false` (não-nullable) a menos que você configure explicitamente em `relations`, exatamente como sem `relationsSchema`. Isso nunca se aplica a `otm`/`mtm`, já que ambos são sempre to-many.
 
 Qualquer outro campo que você especificar explicitamente em `relations` sempre sobrescreve o valor derivado pra aquele campo.
 
 `restriction` também **nunca** é derivado — não tem equivalente no schema, é puramente uma escolha de comportamento de escrita (ver abaixo) e sempre precisa ser dado manualmente.
 
-A derivação de `mode`/`table`/`fkHere`/`fkThere` é pulada — o campo volta a precisar de uma entrada totalmente manual, igual sem `relationsSchema` — quando:
+A derivação de `mode`/`table`/`fkHere`/`fkThere`/`through`/`throughFkHere`/`throughFkThere` é pulada — o campo volta a precisar de uma entrada totalmente manual, igual sem `relationsSchema` — quando:
 - o campo não é uma relation dessa tabela em `relationsSchema` (erro de digitação, ou realmente não existe);
-- a relation faz join em mais de uma coluna (uma FK composta);
-- a relation passa por uma tabela de junção (o `through` do Drizzle, pra many-to-many) — `AdapterRelation` não tem forma pra many-to-many de qualquer forma, ver "`mode`" abaixo.
+- a relation faz join em mais de uma coluna (uma FK composta, ou — pra `mtm` — um join composto na tabela pivot);
+- uma coluna de join `.through(...)` aponta pra algo que não é uma coluna simples (uma expressão SQL).
 
 `relationsSchema` é totalmente opcional: tudo acima também funciona — só que manualmente — com a config `relations` 100% manual descrita a seguir.
 
@@ -215,12 +218,20 @@ relations: {
     posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
     address: { mode: "oto", restriction: "set", table: addressTable, fkThere: "userId", nullable: true },
     author: { mode: "mto", restriction: "set", table: userTable, fkHere: "authorId" },
+    tags: {
+        mode: "mtm",
+        restriction: "set",
+        table: tagTable,
+        through: postTagTable,
+        throughFkHere: "postId",
+        throughFkThere: "tagId",
+    },
 }
 ```
 
-(Com `relationsSchema` configurado, o `mode`/`table`/`fkHere`/`fkThere` acima costumam ser derivados automaticamente — ver "`relationsSchema`" acima; `restriction` é sempre obrigatório, e `nullable` também sempre que você precisar que `null` signifique algo — ele nunca é derivado, ver acima.)
+(Com `relationsSchema` configurado, `mode`/`table`/`fkHere`/`fkThere`/`through`/`throughFkHere`/`throughFkThere` acima costumam ser derivados automaticamente — ver "`relationsSchema`" acima; `restriction` é sempre obrigatório, e `nullable` também sempre que você precisar que `null` signifique algo — ele nunca é derivado, ver acima.)
 
-Sem `relations`, todo campo — incluindo campos de relação — é repassado direto pro `values`/`set` do `insert`/`update` do Drizzle, como está. Isso funciona bem pra campos escalares, mas o Drizzle não tem API de nested-write — então o adapter resolve as escritas de relação imperativamente: separa o payload, insere/atualiza linhas relacionadas na ordem correta, e conecta os valores de FK. Se sua entidade tem relations, normalmente você vai querer configurá-las.
+Sem `relations`, todo campo — incluindo campos de relação — é repassado direto pro `values`/`set` do `insert`/`update` do Drizzle, como está. Isso funciona bem pra campos escalares, mas o Drizzle não tem API de nested-write — então o adapter resolve as escritas de relação imperativamente: separa o payload, insere/atualiza linhas relacionadas na ordem correta, e conecta os valores de FK (ou, pra `mtm`, linhas na tabela de junção). Se sua entidade tem relations, normalmente você vai querer configurá-las.
 
 #### `mode`
 
@@ -231,15 +242,16 @@ Cardinalidade da relation, do ponto de vista da entidade dona do campo:
 | `oto` | one-to-one | um único objeto, ou `null` |
 | `mto` | many-to-one | um único objeto, ou `null` |
 | `otm` | one-to-many | um array de objetos |
+| `mtm` | many-to-many, através de uma tabela de junção | um array de objetos |
 
-> `mtm` (many-to-many) **não** é suportado por este adapter. Se você precisa de many-to-many, modele como duas relações `otm` através de uma tabela de junção.
+`mtm` não tem FK em nenhuma das duas tabelas — o vínculo mora numa tabela de junção/pivot separada que você mesmo possui (`through`), então ele usa `through`/`throughFkHere`/`throughFkThere` em vez de `fkHere`/`fkThere` (ver abaixo).
 
 #### `restriction`
 
 Controla como `save`/`update`/`upsert` tratam itens de relação que já existem (casados pela primary key) e, pra relations to-many, itens que **não** vieram no payload:
 
 - **`"add"`** — só cria/atualiza os itens enviados. Itens já existentes que não estão no payload permanecem intocados.
-- **`"set"`** — igual a `"add"`, mas também remove o que não foi enviado: em `otm` deleta os itens que faltam no array; em `oto`/`mto` com `nullable: true`, enviar `null` deleta/desconecta a relation (ver abaixo).
+- **`"set"`** — igual a `"add"`, mas também remove o que não foi enviado: em `otm` deleta os itens que faltam no array; em `oto`/`mto` com `nullable: true`, enviar `null` deleta/desconecta a relation (ver abaixo); em `mtm` deleta só as **linhas da tabela de junção** que faltam — a entidade relacionada em si nunca é apagada, já que uma relação many-to-many nunca é dona da linha relacionada do jeito que uma `otm` é.
 
 #### `fkHere`, `fkThere` e `nullable`
 
@@ -247,22 +259,68 @@ Diferente do adapter Prisma (que usa um campo `pk` pra identificar registros rel
 
 - **`fkHere`** — a coluna de foreign key **nesta tabela** que aponta pra tabela relacionada. Usado pra `mto` e `oto` (quando a FK fica no lado dono). O adapter lê/escreve nessa coluna pra vincular/desvincular a relation.
 - **`fkThere`** — a coluna de foreign key **na tabela relacionada** que aponta de volta pra esta tabela. Usado pra `otm` e `oto` (quando a FK fica no lado relacionado). O adapter seta essa coluna nas linhas relacionadas pra vincular.
-- **`nullable`** — relevante pras relações to-one `oto`/`mto`. Quando `true`, enviar `null` no campo resolve pra setar a FK como `null` ou deletar a linha relacionada (pra `oto` com `restriction: "set"`). Quando omitido/`false`, enviar `null` numa relação to-one lança um `VSRepoAdapterError` (code `INVALID_DATA`).
+- **`nullable`** — relevante pras relações to-one `oto`/`mto`. Quando `true`, enviar `null` no campo resolve pra setar a FK como `null` ou deletar a linha relacionada (pra `oto` com `restriction: "set"`). Quando omitido/`false`, enviar `null` numa relação to-one lança um `VSRepoAdapterError` (code `INVALID_DATA`). Não se aplica a `otm`/`mtm`.
 
-Cada `mode` exige exatamente um entre `fkHere`/`fkThere`:
+Cada `mode` exige exatamente um entre `fkHere`/`fkThere` — exceto `mtm`, que usa `through`/`throughFkHere`/`throughFkThere` no lugar (ver abaixo) e não aceita `fkHere`/`fkThere` de forma alguma:
 
 | `mode` | FK obrigatória | Por que |
 | --- | --- | --- |
 | `otm` | `fkThere` | A FK fica no lado "many" (a tabela relacionada) |
 | `mto` | `fkHere` | A FK fica na tabela dona |
 | `oto` | `fkHere` **ou** `fkThere` | Depende de qual lado tem a FK |
+| `mtm` | `through` + `throughFkHere` + `throughFkThere` | Não tem FK em nenhuma das duas tabelas — o vínculo mora numa tabela de junção separada |
+
+#### `through`, `throughFkHere` e `throughFkThere`
+
+Exclusivo do `mtm`. Uma relação many-to-many não tem FK direta em nenhum dos dois lados — o vínculo é uma linha numa tabela de junção/pivot que você mesmo possui, então esses três campos substituem `fkHere`/`fkThere` nesse modo:
+
+- **`through`** — a `Table` do Drizzle pra tabela de junção (ex.: `postTagTable`, com colunas `postId`/`tagId` e tipicamente uma primary key composta nas duas).
+- **`throughFkHere`** — a coluna em `through` que referencia a pk **desta** tabela (ex.: `postId`, do ponto de vista de `postTable`).
+- **`throughFkThere`** — a coluna em `through` que referencia a pk da tabela **relacionada** (ex.: `tagId`).
+
+```typescript
+tags: {
+    mode: "mtm",
+    restriction: "set",
+    table: tagTable,
+    through: postTagTable,
+    throughFkHere: "postId",
+    throughFkThere: "tagId",
+}
+```
+
+Escritas: um item sem pk é `insert`ado em `table` e depois vinculado; um item com pk que ainda não existe é `insert`ado; um item com pk que *já* existe **não** é atualizado — o resto dos campos no payload é ignorado, só a linha de junção é (re)vinculada. Isso difere de `otm`, que atualiza os campos de uma linha relacionada já existente em toda escrita, independente do `restriction`: `mtm` nunca mexe nos campos da linha relacionada depois que ela já existe, já que a relação não é dona dela (ver `restriction` acima). De qualquer forma, uma linha de junção só é inserida se ainda não existir uma pra aquele par (então reenviar um item já vinculado é um no-op, não uma linha duplicada). Com `restriction: "set"`, qualquer linha de junção deste "pai" que não fez parte do payload é apagada — de novo, só a linha de *junção*, nunca a entidade relacionada em `table`.
+
+Se você usa o `defineRelations()` do Drizzle com um join `.through(...)` (ver abaixo), os três campos acima são derivados automaticamente de `relationsSchema` — normalmente você só precisa de `restriction`.
+
+Com `relationsSchema` configurado assim:
+
+```typescript
+export const relations = defineRelations(schema, r => ({
+    postTable: {
+        tags: r.many.tagTable({
+            from: r.postTable.id.through(r.postTagTable.postId),
+            to: r.tagTable.id.through(r.postTagTable.tagId),
+        }),
+    },
+    // ...
+}));
+```
+
+a config do construtor se resume a:
+
+```typescript
+relations: {
+    tags: { restriction: "set" },
+}
+```
 
 #### Como cada método de escrita resolve relations
 
 | Método | Relations |
 | --- | --- |
-| `create` | Resolve relations `fkHere` primeiro (cria/faz upsert das linhas relacionadas, seta a FK na linha principal antes de inserir), depois insere a linha principal, então resolve relations `fkThere` (cria/faz upsert das linhas relacionadas com a FK apontando pra linha recém-criada) |
-| `update` / `upsert` (metade do update) / `save` (branch de upsert) | Resolução completa: cria/faz upsert/deleta linhas relacionadas conforme `mode`/`restriction`, atualizando FKs conforme necessário |
+| `create` | Resolve relations `fkHere` primeiro (cria/faz upsert das linhas relacionadas, seta a FK na linha principal antes de inserir), depois insere a linha principal, então resolve relations `fkThere`/`mtm` (cria/faz upsert das linhas relacionadas pra `otm`/`oto`; pra `mtm`, só cria as linhas que ainda não existem — as existentes ficam como estão — e então vincula via `through`, com a FK/vínculo apontando pra linha recém-criada) |
+| `update` / `upsert` (metade do update) / `save` (branch de upsert) | Resolução completa: cria/faz upsert/deleta linhas relacionadas (ou, pra `mtm`, linhas da tabela de junção) conforme `mode`/`restriction`, atualizando FKs conforme necessário |
 | `createMany` / `createManyReturning` / `updateMany` / `updateManyReturning` | Não suportado — lança um `VSRepoAdapterError` apontando o campo problemático se o payload tiver uma relation configurada |
 
 ### `relations` nas options (leitura)
@@ -294,7 +352,7 @@ O `select` e o `relations` que você passa nas options são transformados em `co
 
 `merge(where, obj, options)` busca o registro que casa com `where` e devolve ele **deep-merged, em memória**, com `obj` — ele **não** escreve nada no banco. Isso reflete exatamente como o `merge` funciona no VSRepository: ele serve pra montar uma entidade completa e mesclada, que você depois passa pro `save`/`update`, e não pra persistir um update parcial diretamente.
 
-Pra relations to-many (`otm`), os itens do registro salvo e os itens de `obj` são casados pela primary key: um match faz merge dos dois itens, uma pk nova (ou sem pk) é apenas adicionada. `merge` nunca remove nada.
+Pra relations to-many (`otm`/`mtm`), os itens do registro salvo e os itens de `obj` são casados pela primary key: um match faz merge dos dois itens, uma pk nova (ou sem pk) é apenas adicionada. `merge` nunca remove nada.
 
 ## Métodos atômicos e de agregação
 
@@ -334,6 +392,41 @@ O adapter suporta três dialetos SQL, cada um com comportamento ligeiramente dif
 | Interpretação de resultado raw | array de linhas do node-postgres | shape de resultado do better-sqlite3 | array de linhas do node-postgres |
 
 O dialeto é auto-detectado a partir da própria classe da `table` no Drizzle (`PgTable`/`CockroachTable`/`SQLiteTable`) quando `dialect` não é informado na config — ver [Config do construtor](#config-do-construtor). Um `dialect` explícito sempre sobrescreve a detecção.
+
+## Suporte a `distinct` no `findMany` (só `postgresql`)
+
+`findMany` aceita uma option `distinct` — um array com os nomes dos campos pra deduplicar o resultado — mas **só pro dialeto `postgresql`**:
+
+```typescript
+class UserRepository extends VSRepository<User, string> {
+    constructor() {
+        super({...});
+    }
+
+    @DynamicMethod()
+    declare findByActiveIsTrueDistinctRole: () => Promise<User[]>;
+}
+
+const userRepository = new UserRepository();
+
+// Um registro por 'role':
+const oneUserPerRole = await userRepository.findByActiveIsTrueDistinctRole();
+```
+
+Passar `distinct` quando o dialeto do adapter é `sqlite` ou `cockroach` lança um `VSRepoAdapterError` (code `NOT_SUPPORTED`).
+
+A API de query relacional do Drizzle (`db.query[key].findMany`) não tem opção `distinct` própria, então o adapter implementa isso do mesmo jeito que já faz pros filtros `_every`/`_none` (ver a linha de `_every`/`_none` em [Limitações conhecidas](#limitações-conhecidas)): primeiro roda `db.selectDistinctOn(...)` pelo query builder **core** do Drizzle pra buscar só as PKs das linhas já deduplicadas, depois roda de novo a query relacional filtrando por essas PKs — assim `select`/`relations` continuam funcionando normalmente no resultado. Isso custa um round-trip a mais, igual `_every`/`_none`.
+
+Quando `distinct` e `order` são informados juntos, `order` decide **qual registro "vence" em cada grupo do `distinct`**, não só a ordem final do resultado — isso espelha a semântica do próprio `SELECT DISTINCT ON (...) ... ORDER BY ...` do Postgres, já que é exatamente isso que roda por baixo dos panos:
+
+```typescript
+// Mantém o post MAIS RECENTE de cada usuário:
+const latestPostPerUser = await postRepository.findByDistinctUserIdOrderByCreatedAtDesc();
+```
+
+`pagination` (`limit`/`offset`) é aplicada **depois** da deduplicação, sobre o conjunto já distinto — não sobre as linhas originais antes do `distinct` colapsá-las.
+
+`distinct` precisa ser um array não-vazio com nomes de colunas reais da tabela — um array vazio lança `VSRepoAdapterError` (code `INVALID_DATA`), e um nome de campo desconhecido lança `VSRepoAdapterError` (code `FIELD_NOT_FOUND`).
 
 ## Transactions
 
@@ -388,16 +481,15 @@ O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra ca
 
 | Limitação | Detalhes |
 | --- | --- |
-| Sem suporte a `distinct` | A API de query relacional do Drizzle (`db.query[key].findMany`) não tem opção `distinct` — passar `distinct` no `findMany` lança `NOT_SUPPORTED`. |
-| Sem modo `mtm` | Relations many-to-many não são suportadas. Modele como duas relações `otm` através de uma tabela de junção. |
+| `distinct` só no `postgresql` | O `distinct` do `findMany` usa `db.selectDistinctOn(...)`, que é específico do Postgres — passar `distinct` pra `sqlite`/`cockroach` lança `NOT_SUPPORTED`. Ver [Suporte a `distinct` no `findMany`](#suporte-a-distinct-no-findmany-só-postgresql). |
 | Sem `timeoutMs` em transactions | A API de transaction do Drizzle não expõe um parâmetro de timeout — passar `timeoutMs` lança `NOT_SUPPORTED`. |
 | Filtros quantificadores `_every`/`_none` | Suportados, mas disparam um round-trip extra: uma query SQL de prefetch encontra as PKs que casam, então a API de query relacional filtra por essas PKs. |
 | `select` com campos de relação marcados como `true` | Um campo de relação marcado como `true` no `select` só é enviado pro `with` se o adapter conseguir identificar isso — via `relationsSchema` (qualquer profundidade) ou o `relations` do construtor (só primeiro nível) — caso contrário, é tratado como coluna escalar e a query falha. Sem `relationsSchema`, relations aninhadas marcadas como `true` dentro de um objeto `select` são sempre tratadas como colunas (especifique um campo ou use a option `relations`). |
-| Derivação do `relationsSchema` não cobre FK composta nem many-to-many | Uma relation que faz join em mais de uma coluna, ou passa por uma tabela de junção (`through` do Drizzle), volta a precisar de uma entrada `relations` totalmente manual — igual sem `relationsSchema`. |
+| Derivação do `relationsSchema` não cobre FKs/joins compostos | Uma relation que faz join em mais de uma coluna — incluindo, pra `mtm`, um join composto na tabela pivot — volta a precisar de uma entrada `relations` totalmente manual — igual sem `relationsSchema`. |
 | MySQL não suportado | Só `postgresql`, `sqlite` e `cockroach` são suportados. Uma `table` criada com `mysqlTable()` lança `NOT_SUPPORTED` na hora da construção (o dialeto não é auto-detectável, e `dialect` nem tem um valor `"mysql"` pra passar). |
 
 ## Requisitos
 
-- `vsrepo` ^2.3.0
+- `vsrepo` ^2.4.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20

@@ -6,18 +6,24 @@
  * declaratively via Prisma's nested-write API (`create`/`connectOrCreate`/
  * `upsert`/`disconnect`/`delete`/`deleteMany`), which Drizzle has no
  * equivalent of. Behavior mirrors that adapter's rules 1:1 (see its
- * `data.parser.ts` docstring) — minus `mtm`, which this adapter's
- * `AdapterRelation` doesn't model.
+ * `data.parser.ts` docstring), `mtm` included — with one deliberate
+ * difference: Prisma's implicit m2m join table is invisible to the app, so
+ * its `set: []` cleanup can't tell "unlink" from "delete" apart; this
+ * adapter's `mtm` always goes through an explicit join `Table` the app owns
+ * (`through`), so `restriction: "set"` cleanup only ever deletes *join
+ * rows*, never the related entity itself (see `resolveMtmField`).
  *
  * A payload field is split, by the configured relation's FK side, into:
  *  - `fkHere` relations (`mto`, and `oto` when the FK lives on *this*
  *    table) — the FK column is part of *this* table's own row, so these
  *    MUST be resolved and merged into the row's data BEFORE it's inserted/
  *    updated (`resolveFkHereFields`).
- *  - `fkThere` relations (`otm`, and `oto` when the FK lives on the
- *    *related* table) — the FK column lives on the related row and points
- *    back via this table's pk, so these can only be resolved AFTER this
- *    table's own row exists / its pk is known (`resolveFkThereFields`).
+ *  - `fkThere` relations (`otm`, `mtm`, and `oto` when the FK lives on the
+ *    *related* table) — for `otm`/`oto` the FK column lives on the related
+ *    row and points back via this table's pk; for `mtm` there's no FK on
+ *    either row at all, only join rows on `through` — either way this can
+ *    only be resolved AFTER this table's own row exists / its pk is known
+ *    (`resolveFkThereFields`).
  *
  * Nested creates only go one level deep: a related record's own payload is
  * inserted as-is (its scalar fields), it is NOT recursively checked for
@@ -43,7 +49,7 @@ export type SplitPayload = {
     scalarFields: PlainObject;
     /** Configured relations whose FK column lives on *this* table (`mto`, `oto` + `fkHere`). */
     fkHereEntries: [string, ResolvedRelation, unknown][];
-    /** Configured relations whose FK column lives on the *related* table (`otm`, `oto` + `fkThere`). */
+    /** Configured relations with no FK on *this* table's own row (`otm`, `oto` + `fkThere`, and `mtm`). */
     fkThereEntries: [string, ResolvedRelation, unknown][];
 };
 
@@ -84,6 +90,7 @@ async function resolveFkHereField(
     relation: ResolvedRelation,
     field: PlainObject | null,
     currentFkValue: unknown,
+    ownerIsBeingInsertedNow: boolean,
 ): Promise<unknown> {
     const relatedTable = relation.table as unknown as PlainObject;
     const pkColumn = relatedTable[relation.relatedPk];
@@ -99,7 +106,7 @@ async function resolveFkHereField(
         if (relation.mode === "mto") return null;
 
         // relation.mode === "oto"
-        if (relation.restriction === "set" && currentFkValue != undefined) {
+        if (relation.restriction === "set" && currentFkValue != undefined && !ownerIsBeingInsertedNow) {
             await (tx as any).delete(relation.table).where(eq(pkColumn, currentFkValue));
         }
 
@@ -109,6 +116,19 @@ async function resolveFkHereField(
     const pkValue = field[relation.relatedPk];
 
     if (pkValue === undefined) {
+        // Mirrors resolveOtoFkThereField: if this owner is already linked to a related
+        // row (`currentFkValue`), reuse/update it instead of inserting a duplicate that
+        // would leave the previously-linked row orphaned.
+        if (currentFkValue != undefined && !ownerIsBeingInsertedNow) {
+            if (relation.restriction === "set") {
+                const dataWithoutPk = omitKey(field, relation.relatedPk);
+                if (Object.keys(dataWithoutPk).length > 0) {
+                    await (tx as any).update(relation.table).set(dataWithoutPk).where(eq(pkColumn, currentFkValue));
+                }
+            }
+            return currentFkValue;
+        }
+
         const [created] = await (tx as any)
             .insert(relation.table)
             .values(field)
@@ -140,6 +160,7 @@ export async function resolveFkHereFields(
     entries: [string, ResolvedRelation, unknown][],
     scalarFields: PlainObject,
     currentRow: PlainObject | undefined,
+    ownerIsBeingInsertedNow: boolean,
 ): Promise<void> {
     for (const [key, relation, value] of entries) {
         if (value !== null && typeof value !== "object") {
@@ -151,7 +172,13 @@ export async function resolveFkHereFields(
         }
 
         const currentFkValue = currentRow?.[relation.fkHere as string];
-        const resolved = await resolveFkHereField(tx, relation, value as PlainObject | null, currentFkValue);
+        const resolved = await resolveFkHereField(
+            tx,
+            relation,
+            value as PlainObject | null,
+            currentFkValue,
+            ownerIsBeingInsertedNow,
+        );
 
         scalarFields[relation.fkHere as string] = resolved;
     }
@@ -167,13 +194,22 @@ async function resolveOtmField(
     relation: ResolvedRelation,
     items: PlainObject[],
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const fkColumn = relatedTable[relation.fkThere as string];
     const pkColumn = relatedTable[relation.relatedPk];
 
-    const withoutPk = items.filter(item => item[relation.relatedPk] === undefined);
-    const withPk = items.filter(item => item[relation.relatedPk] !== undefined);
+    const withoutPk: PlainObject[] = [];
+    const withPk: PlainObject[] = [];
+
+    for (const item of items) {
+        if (item[relation.relatedPk] === undefined) {
+            withoutPk.push(item);
+        } else {
+            withPk.push(item);
+        }
+    }
 
     // Every pk that ends up part of this write — whether freshly generated (`withoutPk`) or
     // given up front (`withPk`) — has to be tracked BEFORE the `restriction: "set"` cleanup
@@ -206,15 +242,12 @@ async function resolveOtmField(
             continue;
         }
 
-        const setData =
-            relation.restriction === "set"
-                ? { ...omitKey(item, relation.relatedPk), [relation.fkThere as string]: ownPkValue }
-                : { [relation.fkThere as string]: ownPkValue };
+        const setData = { ...omitKey(item, relation.relatedPk), [relation.fkThere as string]: ownPkValue };
 
         await (tx as any).update(relation.table).set(setData).where(eq(pkColumn, pkValue));
     }
 
-    if (relation.restriction === "set") {
+    if (relation.restriction === "set" && !ownerJustInserted) {
         const condition =
             connectedIds.length > 0
                 ? and(eq(fkColumn, ownPkValue), notInArray(pkColumn, connectedIds))!
@@ -224,12 +257,109 @@ async function resolveOtmField(
     }
 }
 
+/**
+ * Resolves one `mtm` relation field against `ownPkValue` (this table's own,
+ * already-known, pk value) — creates/updates the related rows exactly like
+ * `resolveOtmField` does, but links them via a row on the join `through`
+ * table instead of an FK column on the related row itself (a many-to-many
+ * has no such column on either side).
+ *
+ * `restriction: "set"` cleanup only ever deletes stale rows from `through`
+ * (unlinking) — it never touches `relation.table` itself, since the related
+ * entity is never owned by this relation the way an `otm` child row is.
+ */
+async function resolveMtmField(
+    tx: DrizzleTransactionLike,
+    relation: ResolvedRelation,
+    items: PlainObject[],
+    ownPkValue: unknown,
+    ownerJustInserted: boolean,
+): Promise<void> {
+    const relatedTable = relation.table as unknown as PlainObject;
+    const throughTable = relation.through as unknown as PlainObject;
+    const pkColumn = relatedTable[relation.relatedPk];
+    const throughHereColumn = throughTable[relation.throughFkHere as string];
+    const throughThereColumn = throughTable[relation.throughFkThere as string];
+
+    const withoutPk: PlainObject[] = [];
+    const withPk: PlainObject[] = [];
+
+    for (const item of items) {
+        if (item[relation.relatedPk] === undefined) {
+            withoutPk.push(item);
+        } else {
+            withPk.push(item);
+        }
+    }
+
+    // Same reasoning as `resolveOtmField`: every pk that ends up linked — freshly
+    // generated or given up front — has to be tracked BEFORE the `restriction: "set"`
+    // cleanup below runs, or it'll unlink a join row created a moment ago.
+    const connectedIds: unknown[] = [];
+
+    async function link(relatedPkValue: unknown): Promise<void> {
+        const existingLink = await (tx as any)
+            .select({ here: throughHereColumn })
+            .from(relation.through)
+            .where(and(eq(throughHereColumn, ownPkValue), eq(throughThereColumn, relatedPkValue)))
+            .limit(1);
+
+        if (existingLink.length === 0) {
+            await (tx as any).insert(relation.through).values({
+                [relation.throughFkHere as string]: ownPkValue,
+                [relation.throughFkThere as string]: relatedPkValue,
+            });
+        }
+    }
+
+    for (const item of withoutPk) {
+        const [insertedRow] = await (tx as any)
+            .insert(relation.table)
+            .values(item)
+            .returning({ [relation.relatedPk]: pkColumn });
+
+        if (insertedRow?.[relation.relatedPk] === undefined) continue;
+
+        connectedIds.push(insertedRow[relation.relatedPk]);
+        await link(insertedRow[relation.relatedPk]);
+    }
+
+    for (const item of withPk) {
+        const pkValue = item[relation.relatedPk];
+        connectedIds.push(pkValue);
+
+        const existing = await (tx as any)
+            .select({ pk: pkColumn })
+            .from(relation.table)
+            .where(eq(pkColumn, pkValue))
+            .limit(1);
+
+        if (existing.length === 0) {
+            await (tx as any).insert(relation.table).values(item);
+        }
+
+        await link(pkValue);
+    }
+
+    if (relation.restriction === "set" && !ownerJustInserted) {
+        const condition =
+            connectedIds.length > 0
+                ? and(eq(throughHereColumn, ownPkValue), notInArray(throughThereColumn, connectedIds))!
+                : eq(throughHereColumn, ownPkValue);
+
+        // Deletes only the join rows (the link) — the related entity itself is
+        // never deleted here, unlike `resolveOtmField`'s `"set"` cleanup.
+        await (tx as any).delete(relation.through).where(condition);
+    }
+}
+
 /** Resolves one `oto` field whose FK lives on the related table. */
 async function resolveOtoFkThereField(
     tx: DrizzleTransactionLike,
     relation: ResolvedRelation,
     field: PlainObject | null,
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     const relatedTable = relation.table as unknown as PlainObject;
     const fkColumn = relatedTable[relation.fkThere as string];
@@ -243,14 +373,18 @@ async function resolveOtoFkThereField(
                 null,
             );
         }
-        if (relation.restriction === "set") {
-            await (tx as any).delete(relation.table).where(eq(fkColumn, ownPkValue));
-        } else {
-            await (tx as any)
-                .update(relation.table)
-                .set({ [fkColumn]: null })
-                .where(eq(fkColumn, ownPkValue));
+
+        if (!ownerJustInserted) {
+            if (relation.restriction === "set") {
+                await (tx as any).delete(relation.table).where(eq(fkColumn, ownPkValue));
+            } else {
+                await (tx as any)
+                    .update(relation.table)
+                    .set({ [fkColumn]: null })
+                    .where(eq(fkColumn, ownPkValue));
+            }
         }
+
         return;
     }
 
@@ -267,11 +401,9 @@ async function resolveOtoFkThereField(
     };
 
     if (pkValue === undefined) {
-        const [otoRel] = await (tx as any)
-            .select({ pk: pkColumn })
-            .from(relation.table)
-            .where(eq(fkColumn, ownPkValue))
-            .limit(1);
+        const [otoRel] = ownerJustInserted
+            ? []
+            : await (tx as any).select({ pk: pkColumn }).from(relation.table).where(eq(fkColumn, ownPkValue)).limit(1);
 
         if (!otoRel) {
             await (tx as any).insert(relation.table).values({ ...field, [relation.fkThere as string]: ownPkValue });
@@ -308,9 +440,10 @@ export async function resolveFkThereFields(
     tx: DrizzleTransactionLike,
     entries: [string, ResolvedRelation, unknown][],
     ownPkValue: unknown,
+    ownerJustInserted: boolean,
 ): Promise<void> {
     for (const [key, relation, value] of entries) {
-        if (relation.mode === "otm") {
+        if (relation.mode === "otm" || relation.mode === "mtm") {
             if (!Array.isArray(value)) {
                 throw new VSRepoAdapterError(
                     `Field '${key}': expected an array for a to-many relation, got '${typeof value}'.`,
@@ -318,7 +451,12 @@ export async function resolveFkThereFields(
                     null,
                 );
             }
-            await resolveOtmField(tx, relation, value as PlainObject[], ownPkValue);
+
+            if (relation.mode === "mtm") {
+                await resolveMtmField(tx, relation, value as PlainObject[], ownPkValue, ownerJustInserted);
+            } else {
+                await resolveOtmField(tx, relation, value as PlainObject[], ownPkValue, ownerJustInserted);
+            }
             continue;
         }
 
@@ -330,6 +468,6 @@ export async function resolveFkThereFields(
             );
         }
 
-        await resolveOtoFkThereField(tx, relation, value as PlainObject | null, ownPkValue);
+        await resolveOtoFkThereField(tx, relation, value as PlainObject | null, ownPkValue, ownerJustInserted);
     }
 }

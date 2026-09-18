@@ -22,10 +22,10 @@ import {
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import { DrizzleOrmTypes } from "../src/types/drizzle-orm-types.type.js";
 import cleanDbHelper from "./helpers/clean-db.helper.js";
-import { createAddress, createCategory, createPost, createUser } from "./helpers/fixtures.js";
+import { createAddress, createCategory, createPost, createTag, createUser, linkPostTag } from "./helpers/fixtures.js";
 import { db } from "../dev/drizzle/db.js";
 import { Address, Post, User } from "../dev/entities.js";
-import { addressTable, categoryTable, postTable, userTable } from "../dev/drizzle/schema.js";
+import { addressTable, categoryTable, postTable, postTagTable, tagTable, userTable } from "../dev/drizzle/schema.js";
 
 type MyOrmTypes = DrizzleOrmTypes<typeof db>;
 
@@ -113,6 +113,35 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
 }
 
 /**
+ * Repositório concreto de `Post`, configurado com `tags` (mtm, através de
+ * `postTagTable`) — complementa `PostRepository` (que cobre `mto`), mantendo
+ * cada repositório de teste focado numa relação por vez.
+ */
+class PostTagsRepository extends VSRepository<Post, string, MyOrmTypes> {
+    constructor() {
+        super({
+            adapter: new DrizzleAdapter<Post>(db, {
+                queryKey: "postTable",
+                table: postTable,
+                dialect: "postgresql",
+                relations: {
+                    tags: {
+                        mode: "mtm",
+                        restriction: "set",
+                        table: tagTable,
+                        through: postTagTable,
+                        throughFkHere: "postId",
+                        throughFkThere: "tagId",
+                    },
+                },
+            }),
+            pkName: "id",
+            logLevel: VSLogLevel.ERROR,
+        });
+    }
+}
+
+/**
  * Repositório concreto de `Address`, configurado com `user` (oto, FK em
  * `Address.userId` — fkHere, e não-nullable, já que a coluna é `NOT NULL`)
  * — complementa o `oto`/`fkThere` já coberto pelo `UserRepository` acima.
@@ -138,12 +167,14 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
     let userRepository: UserRepositoryType;
     let postRepository: PostRepository;
     let addressRepository: AddressRepository;
+    let postTagsRepository: PostTagsRepository;
 
     beforeEach(async () => {
         await cleanDbHelper();
         userRepository = new UserRepository() as UserRepositoryType;
         postRepository = new PostRepository();
         addressRepository = new AddressRepository();
+        postTagsRepository = new PostTagsRepository();
     });
 
     describe("CRUD básico via VSRepository (get/save/patch/remove/...)", () => {
@@ -348,6 +379,53 @@ describe("DrizzleAdapter usado através de uma VSRepository real (integração c
 
             const found = await userRepository.get(user.id, { relations: { posts: true } });
             expect(found?.posts.map((p: Post) => p.title).sort()).toEqual(["Post existente", "Post novo"]);
+        });
+    });
+
+    describe("relação 'mtm' (tags) através da VSRepository", () => {
+        it("save com Tags aninhadas (sem pk) cria o Post e as Tags, vinculadas via PostTag", async () => {
+            const author = await createUser({ email: "autor@example.com" });
+
+            const result = await postTagsRepository.save(
+                {
+                    title: "Post",
+                    content: "...",
+                    userId: author.id,
+                    tags: [{ name: "ts" }, { name: "node" }],
+                },
+                { relations: { tags: true } },
+            );
+
+            expect(result.tags.map((t: Post["tags"][number]) => t.name).sort()).toEqual(["node", "ts"]);
+        });
+
+        it("patch conectando uma Tag já existente (com pk) vincula sem duplicá-la", async () => {
+            const author = await createUser({ email: "autor@example.com" });
+            const post = await createPost(author.id, { title: "Post" });
+            const tag = await createTag({ name: "ts" });
+
+            await postTagsRepository.patch(post.id, { tags: [{ id: tag.id, name: "ts" }] });
+
+            const found = await postTagsRepository.get(post.id, { relations: { tags: true } });
+            expect(found?.tags.map(t => t.id)).toEqual([tag.id]);
+        });
+
+        it("patch com 'restriction: set' desvincula Tags fora do payload sem apagá-las", async () => {
+            const author = await createUser({ email: "autor@example.com" });
+            const post = await createPost(author.id, { title: "Post" });
+            const tagA = await createTag({ name: "a" });
+            const tagB = await createTag({ name: "b" });
+            await linkPostTag(post.id, tagA.id);
+            await linkPostTag(post.id, tagB.id);
+
+            await postTagsRepository.patch(post.id, { tags: [{ id: tagA.id, name: "a" }] });
+
+            const found = await postTagsRepository.get(post.id, { relations: { tags: true } });
+            expect(found?.tags.map(t => t.id)).toEqual([tagA.id]);
+
+            // tagB continua existindo no banco — só o vínculo foi removido.
+            const tagsInDb = await db.select().from(tagTable);
+            expect(tagsInDb.map(t => t.id).sort()).toEqual([tagA.id, tagB.id].sort());
         });
     });
 

@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, uuid, varchar, timestamp, char, integer } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, varchar, timestamp, char, integer, primaryKey } from "drizzle-orm/pg-core";
 import { Role } from "../enum/role.enum.js";
 
 export const timestamps = {
@@ -45,3 +45,28 @@ export const postTable = pgTable("Post", {
         .references(() => userTable.id, { onDelete: "cascade" }),
     ...timestamps,
 });
+
+export const tagTable = pgTable("Tag", {
+    id: uuid().primaryKey().defaultRandom(),
+    name: varchar({ length: 100 }).notNull().unique(),
+    createdAt: timestamps.createdAt,
+});
+
+/**
+ * Join/pivot table for the `postTable` <-> `tagTable` many-to-many. No own
+ * `id` — a composite pk on the two FKs is all a pure join table needs, and
+ * the adapter's `mtm` writes never look up a join row by its own pk anyway
+ * (see `throughFkHere`/`throughFkThere` in `AdapterRelation`).
+ */
+export const postTagTable = pgTable(
+    "PostTag",
+    {
+        postId: uuid()
+            .notNull()
+            .references(() => postTable.id, { onDelete: "cascade" }),
+        tagId: uuid()
+            .notNull()
+            .references(() => tagTable.id, { onDelete: "cascade" }),
+    },
+    table => [primaryKey({ columns: [table.postId, table.tagId] })],
+);

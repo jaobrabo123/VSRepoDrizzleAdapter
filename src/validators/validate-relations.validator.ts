@@ -19,15 +19,23 @@
  *
  * For every configured relation, after merging, checks, in order:
  *  - `table` is a Drizzle `Table` instance;
- *  - `mode` is one of `"otm" | "mto" | "oto"`;
+ *  - `mode` is one of `"otm" | "mto" | "oto" | "mtm"`;
  *  - `restriction` is one of `"set" | "add"`;
- *  - the combination of `fkHere`/`fkThere` present matches what `mode` requires
- *    (`otm` -> only `fkThere`; `mto` -> only `fkHere`; `oto` -> exactly one of the two);
- *  - the given `fkHere` is an actual column of *this* adapter's table, and the
- *    given `fkThere` is an actual column of the related `table`;
+ *  - for `otm`/`mto`/`oto`: the combination of `fkHere`/`fkThere` present matches
+ *    what `mode` requires (`otm` -> only `fkThere`; `mto` -> only `fkHere`; `oto`
+ *    -> exactly one of the two), the given `fkHere` is an actual column of *this*
+ *    adapter's table, and the given `fkThere` is an actual column of the related
+ *    `table`;
+ *  - for `mtm`: `fkHere`/`fkThere` aren't accepted (they describe a direct FK,
+ *    which a many-to-many doesn't have); `through` is a Drizzle `Table` instance
+ *    (the join/pivot table); `throughFkHere`/`throughFkThere` are two distinct
+ *    actual columns of `through`;
  *  - the related `table` has a primary key (via `resolveTableConfig`, reused
  *    to resolve `relatedPk`, needed to tell "connect/upsert existing" apart
- *    from "create new" on nested writes).
+ *    from "create new" on nested writes). `through`'s own primary key is never
+ *    resolved this way — `mtm` writes never need to "upsert" a join-table row
+ *    by its own pk, only insert/delete it by the `throughFkHere`/`throughFkThere`
+ *    pair.
  *
  * Returns a `Map` (rather than the original plain object) so nested-write
  * resolution can do `this.relations.get(key)` without repeated `in`/`hasOwnProperty`
@@ -46,7 +54,7 @@ import { deriveRelation } from "../resolvers/derive-relation.resolver.js";
 import { isPlainObject } from "./is-plain-object.validator.js";
 import { SupportedDialects } from "../types/supported-dialects.type.js";
 
-const MODES = new Set(["otm", "mto", "oto"]);
+const MODES = new Set(["otm", "mto", "oto", "mtm"]);
 const RESTRICTIONS = new Set(["set", "add"]);
 
 function fail(message: string): never {
@@ -98,6 +106,9 @@ export function validateRelations<T>(
         const fkHere = pick(rawObj, derived, "fkHere");
         const fkThere = pick(rawObj, derived, "fkThere");
         const nullable = rawObj.nullable;
+        const through = pick(rawObj, derived, "through");
+        const throughFkHere = pick(rawObj, derived, "throughFkHere");
+        const throughFkThere = pick(rawObj, derived, "throughFkThere");
 
         if (!is(relatedTable, Table)) {
             fail(
@@ -159,6 +170,46 @@ export function validateRelations<T>(
             if (nullable !== undefined && typeof nullable !== "boolean") {
                 fail(`Invalid constructor config (relations.${key}.nullable): expected a boolean.`);
             }
+        } else if (mode === "mtm") {
+            if (fkHere !== undefined || fkThere !== undefined) {
+                fail(
+                    `Invalid constructor config (relations.${key}): mode 'mtm' doesn't accept 'fkHere'/'fkThere' ` +
+                        "— a many-to-many has no direct FK between the two tables. Use 'through'/'throughFkHere'/" +
+                        "'throughFkThere' instead.",
+                );
+            }
+
+            if (!is(through, Table)) {
+                fail(
+                    `Invalid constructor config (relations.${key}.through): expected a Drizzle 'Table' instance ` +
+                        "(the join/pivot table between this table and the related table), and it couldn't be " +
+                        "derived from 'relationsSchema' either (missing/not configured, or the relation needs a " +
+                        "manual entry — see 'deriveRelation').",
+                );
+            }
+
+            const throughColumns = new Set(Object.keys(getColumns(through)));
+
+            if (typeof throughFkHere !== "string" || !throughColumns.has(throughFkHere)) {
+                fail(
+                    `Invalid constructor config (relations.${key}.throughFkHere): '${describe(throughFkHere)}' ` +
+                        `is not a column of table '${getTableName(through)}'.`,
+                );
+            }
+
+            if (typeof throughFkThere !== "string" || !throughColumns.has(throughFkThere)) {
+                fail(
+                    `Invalid constructor config (relations.${key}.throughFkThere): '${describe(throughFkThere)}' ` +
+                        `is not a column of table '${getTableName(through)}'.`,
+                );
+            }
+
+            if (throughFkHere === throughFkThere) {
+                fail(
+                    `Invalid constructor config (relations.${key}): 'throughFkHere' and 'throughFkThere' must be ` +
+                        `different columns of table '${getTableName(through)}'.`,
+                );
+            }
         } else {
             if (nullable !== undefined && typeof nullable !== "boolean") {
                 fail(`Invalid constructor config (relations.${key}.nullable): expected a boolean.`);
@@ -195,13 +246,16 @@ export function validateRelations<T>(
         const relatedFieldsConfig = resolveTableConfig(relatedTable, dialect);
 
         resolved.set(key, {
-            mode: mode as "otm" | "mto" | "oto",
+            mode: mode as "otm" | "mto" | "oto" | "mtm",
             restriction,
             table: relatedTable,
             fkHere: fkHere as string | undefined,
             fkThere: fkThere as string | undefined,
             nullable: nullable as boolean | undefined,
             relatedPk: relatedFieldsConfig.pk,
+            through: through as Table | undefined,
+            throughFkHere: throughFkHere as string | undefined,
+            throughFkThere: throughFkThere as string | undefined,
         });
     }
 

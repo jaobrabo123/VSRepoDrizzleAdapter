@@ -1,18 +1,18 @@
 /**
  * Deep-merges, IN MEMORY, a fetched `result` with the
  * `obj` payload passed to `merge()` — same behavior as
- * `VSRepoPrisma7Adapter`'s `mergeEntities`, minus the `mtm` case (this
- * adapter has no `mtm` relation mode). It's on the caller to decide what to
- * do with the returned value (e.g. pass it to `save` next).
+ * `VSRepoPrisma7Adapter`'s `mergeEntities`. It's on the caller to decide what
+ * to do with the returned value (e.g. pass it to `save` next).
  *
  * Without `relations`, this is a plain recursive object merge (arrays are
  * concatenated). With `relations`:
  *  - to-one (`mto`/`oto`) fields are merged directly with the existing
  *    related object, or replaced by `null` when `obj` explicitly sends `null`;
- *  - to-many (`otm`) fields match `result[key]`'s items against `obj[key]`'s
- *    by the relation's `relatedPk`: an item whose pk matches an existing one
- *    is merged into it; one that doesn't is appended. Existing items that
- *    aren't mentioned in `obj[key]` are kept — `merge` never removes anything.
+ *  - to-many (`otm`/`mtm`) fields match `result[key]`'s items against
+ *    `obj[key]`'s by the relation's `relatedPk`: an item whose pk matches an
+ *    existing one is merged into it; one that doesn't is appended. Existing
+ *    items that aren't mentioned in `obj[key]` are kept — `merge` never
+ *    removes anything.
  */
 
 import { PlainObject } from "../types/plain-object.type.js";
@@ -90,12 +90,12 @@ export function mergeEntities<T extends PlainObject, U extends PlainObject>(
             continue;
         }
 
-        if (relation.mode !== "otm" && isPlainObject(merged[key])) {
+        if (relation.mode !== "otm" && relation.mode !== "mtm" && isPlainObject(merged[key])) {
             merged[key] = field === null ? null : deepMergePlain(merged[key], field as PlainObject);
             continue;
         }
 
-        if (relation.mode === "otm" && Array.isArray(merged[key])) {
+        if ((relation.mode === "otm" || relation.mode === "mtm") && Array.isArray(merged[key])) {
             merged[key] = mergeToManyRelation(merged[key], field as PlainObject[], relation.relatedPk);
             continue;
         }

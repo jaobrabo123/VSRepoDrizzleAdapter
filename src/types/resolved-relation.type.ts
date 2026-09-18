@@ -11,7 +11,7 @@ import { Table } from "drizzle-orm";
  * give constructor-config authors autocomplete/type-safety).
  */
 export type ResolvedRelation = {
-    mode: "otm" | "mto" | "oto";
+    mode: "otm" | "mto" | "oto" | "mtm";
     restriction: "set" | "add";
     table: Table;
     /** Column of *this* adapter's table holding the FK — set for `mto`, and for `oto` when the FK lives here. */
@@ -22,4 +22,10 @@ export type ResolvedRelation = {
     nullable?: boolean;
     /** Primary key column name of the related table. */
     relatedPk: string;
+    /** `mtm` only: the join/pivot table between this table and the related table. */
+    through?: Table;
+    /** `mtm` only: column on `through` referencing *this* table's pk. */
+    throughFkHere?: string;
+    /** `mtm` only: column on `through` referencing the *related* table's pk (`relatedPk`). */
+    throughFkThere?: string;
 };
