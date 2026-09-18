@@ -62,4 +62,13 @@ jobs:
         run: bun run build
 
       - name: Stage package
-        run: npm stage publish
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            PRE="${GITHUB_REF_NAME#*-}"
+            DIST_TAG="${PRE%%.*}"
+          else
+            DIST_TAG="latest"
+          fi
+
+          echo "Publishing to stage with tag: $DIST_TAG"
+          npm stage publish --tag "$DIST_TAG"
