@@ -1167,22 +1167,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
         try {
             return await this.runTransactional(options?.db, async tx => {
-                const readArg = await this.resolveReadArgs(where, { ...options, db: tx }, true);
-                this.logger.logDebug(`Resolved Drizzle arg for '${operation}' (field '${String(field)}')`, {
-                    readArg,
-                    value,
+                const current = await this.getQueryBuilder(tx).findFirst({
+                    where: (await this.resolveFindWhere(where, { db: tx, limit: 1 })).where,
+                    columns: { [this.pk]: true },
                 });
-
-                const requestedScalars = readArg.columns ? Object.keys(readArg.columns) : undefined;
-                const pkRequested = !readArg.columns || !!readArg.columns[this.pk];
-
-                // The pre-read only locates the row — the pk feeds the UPDATE's WHERE —
-                // and loads the requested relations. The scalar values come from the
-                // UPDATE's RETURNING below, so `$onUpdate`/UPDATE-trigger columns don't
-                // come back stale.
-                readArg.columns = { [this.pk]: true };
-
-                const current = await this.getQueryBuilder(tx).findFirst(readArg);
 
                 if (!current) {
                     throw new VSRepoAdapterError(
@@ -1196,40 +1184,31 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
                 const pkColumn = (this.table as PlainObject)[this.pk];
                 const column = (this.table as PlainObject)[field as string];
 
-                const qb = tx
+                await tx
                     .update(this.table)
                     .set({ [field]: toExpression(column, value) })
                     .where(eq(pkColumn, ownPkValue));
 
-                // Post-write scalar projection: exactly the requested columns, or every
-                // scalar column when no `select` was given. When only relations were
-                // requested (empty scalar list), the pk is returned as a 0-row probe and
-                // stripped from the result below.
-                if (requestedScalars === undefined) {
-                    qb.returning();
-                } else if (requestedScalars.length > 0) {
-                    qb.returning(
-                        Object.fromEntries(requestedScalars.map(key => [key, (this.table as PlainObject)[key]])),
-                    );
-                } else {
-                    qb.returning({ [this.pk]: pkColumn });
-                }
+                // Post-write read: re-queries the full row (honoring `select`/`relations`/
+                // `order`) after the UPDATE ran, so `$onUpdate`/UPDATE-trigger columns and
+                // relations come back current — same update-then-read contract as `updateCore`.
+                const readArg = await this.resolveReadArgs({ [this.pk]: ownPkValue } as VSRepoWhere<T>, {
+                    ...options,
+                    db: tx,
+                });
+                this.logger.logDebug(`Resolved Drizzle arg for '${operation}' (field '${String(field)}')`, {
+                    readArg,
+                    value,
+                });
 
-                const [written] = await qb;
+                const result = await this.getQueryBuilder(tx).findFirst(readArg);
 
-                if (!written) {
+                if (!result) {
                     throw new VSRepoAdapterError(
                         `'${operation}' updated no records matching the given 'where'.`,
                         AdapterErrorCode.NOT_FOUND,
                         null,
                     );
-                }
-
-                const result = { ...current, ...written } as PlainObject;
-
-                // * Retira a pk do retorno se o usuário não solicitou
-                if (!pkRequested) {
-                    delete result[this.pk];
                 }
 
                 return result as T;
