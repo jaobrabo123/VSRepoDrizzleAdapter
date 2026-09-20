@@ -1358,4 +1358,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     max(field: NumericKeys<T>, where?: VSRepoWhere<T>, options?: AdapterMethodOptions<T>): Promise<number | null> {
         return this.aggregate("max", maxFn, field, where, options);
     }
+
+    /**
+     * Returns the table's primary key
+     *
+     * @publicApi
+     */
+    override getPkName(): string {
+        return this.pk;
+    }
 }
