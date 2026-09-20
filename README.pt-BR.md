@@ -537,6 +537,6 @@ Diferente de uma duração simples, ele também aceita um `boolean`: `false` des
 
 ## Requisitos
 
-- `vsrepo` ^2.4.0
+- `vsrepo` ^2.5.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20
