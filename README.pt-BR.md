@@ -38,6 +38,7 @@
 - [Comportamento por dialeto](#comportamento-por-dialeto)
 - [Suporte a `distinct` no `findMany` (só `postgresql`)](#suporte-a-distinct-no-findmany-só-postgresql)
 - [Transactions](#transactions)
+- [Logging](#logging)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Requisitos](#requisitos)
 
@@ -89,7 +90,6 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                     },
                 },
             }),
-            pkName: "id",
         });
     }
 
@@ -120,6 +120,8 @@ new DrizzleAdapter(db, {
     dialect: "postgresql",       // opcional — auto-detectado a partir da classe da `table` quando omitido; sobrescreve a detecção quando informado
     relationsSchema: relations,  // opcional — o objeto retornado pelo defineRelations() do Drizzle; ver "relationsSchema" abaixo
     relations: { ... },          // opcional — ver "relations no construtor (escrita)" abaixo
+    logLevel: VSLogLevel.WARN,   // opcional — default: VSLogLevel.WARN
+    logSlowThresholdMs: 300,     // opcional — default: 300; também aceita `false` (desativa os warnings de operação lenta)
 });
 ```
 
@@ -130,8 +132,10 @@ new DrizzleAdapter(db, {
 | `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | Não | O dialeto SQL. Auto-detectado a partir da classe do Drizzle da `table` (`PgTable`/`CockroachTable`/`SQLiteTable`) quando omitido — lança `NOT_SUPPORTED` se `table` não for nenhuma das três e `dialect` não foi informado. Um valor explícito sempre sobrescreve a detecção. Afeta a sintaxe de placeholders, `ILIKE` vs `LIKE`, e a interpretação de resultados raw. |
 | `relationsSchema` | O objeto retornado por `defineRelations()` | Não | Habilita duas coisas: reconhecer campos de relação marcados `true` no `select` em qualquer profundidade, e derivar a maior parte do `relations` abaixo. Ver "`relationsSchema`" abaixo. |
 | `relations` | `AdapterRelations<T>` | Não | Config de escrita de relations — ver abaixo. |
+| `logLevel` | `VSLogLevel` (de `vsrepo`) | Não | Nível mínimo de log do `VSLogger` interno do adapter. Default: `VSLogLevel.WARN`. Use `VSLogLevel.DEBUG` para ver cada query resolvida — ver "Logging" abaixo. |
+| `logSlowThresholdMs` | `number \| boolean` | Não | Duração (ms) acima da qual uma operação concluída é logada como `WARN` em vez de `DEBUG`, sinalizando uma query lenta. `false` desativa os warnings de operação lenta por completo; `true` (ou omitir o campo) usa o default de `300`. |
 
-A config é validada no momento da construção — um `table`/`queryKey`/`dialect`/`relationsSchema`/`relations` inválido lança um `VSRepoAdapterError` apontando o campo problemático.
+A config é validada no momento da construção — um `table`/`queryKey`/`dialect`/`relationsSchema`/`relations`/`logLevel`/`logSlowThresholdMs` inválido lança um `VSRepoAdapterError` apontando o campo problemático.
 
 ## Relations
 
@@ -358,7 +362,7 @@ Pra relations to-many (`otm`/`mtm`), os itens do registro salvo e os itens de `o
 
 O adapter implementa os 8 métodos abstratos pros quais `increment`/`decrement`/`multiply`/`divide`/`sum`/`average`/`min`/`max` do `VSRepository` delegam: `incrementOne`, `decrementOne`, `multiplyOne`, `divideOne`, `sum`, `average`, `min`, `max`.
 
-- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` traduzem pra expressões SQL raw — ``sql`${column} + ${value}` `` (e `-`/`*`/`/`) — então a operação é avaliada **server-side** contra o valor *atual* do registro (`UPDATE ... SET field = field + value`), e não como um fetch-then-save no cliente. O adapter lê a pk do registro primeiro, aplica o update atômico, e depois re-lê a entidade completa pra retornar.
+- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` traduzem pra expressões SQL raw — ``sql`${column} + ${value}` `` (e `-`/`*`/`/`) — então a operação é avaliada **server-side** contra o valor *atual* do registro (`UPDATE ... SET field = field + value`), e não como um fetch-then-save no cliente. O adapter localiza o registro pelo `where` primeiro, aplica o update atômico e então faz uma **re-leitura** da linha completa (respeitando `select`/`relations`/`order`) — um fluxo update-then-read idêntico ao do `update`, então colunas mantidas por `$onUpdate`/triggers de UPDATE e relations voltam atualizadas.
 - `sum`/`average`/`min`/`max` traduzem pras funções de agregação do Drizzle `sum()`/`avg()`/`min()`/`max()`. O resultado bruto (`number`, `bigint`, `string` ou `null`) é normalizado pra `number | null` — `null` é repassado como está (espelhando o comportamento dos agregados SQL sobre um conjunto vazio), e valores não-numéricos são convertidos via `Number()`.
 
 ```typescript
@@ -477,6 +481,49 @@ await userRepository.transaction(async tx => {
 
 O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra capturar os registros e suas pks) e depois deleta por `inArray(pk, pks)` em vez de reaplicar o `where`. Isso garante que as linhas deletadas sejam sempre exatamente as que foram retornadas, mesmo que outra linha passe a bater (ou deixe de bater) com o `where` entre as duas etapas. Isso não torna a operação totalmente atômica, porém: uma linha ainda pode ser alterada ou deletada concorrentemente entre o `findMany` e o delete por pk, então os campos não-pk de um registro retornado podem estar desatualizados, ou sua pk pode não bater com nenhuma linha mais no momento do delete (o que deleta silenciosamente 0 linhas pra ela, sem lançar erro). Rode dentro de um `transaction()` num nível de isolamento mais alto se você precisar de consistência estrita.
 
+## Logging
+
+O adapter usa o `VSLogger` (de `vsrepo`) internamente. Defina `logLevel` na config do construtor para controlar a verbosidade; o default é `VSLogLevel.WARN`, então nada é logado a menos que uma query seja lenta (ver `logSlowThresholdMs` abaixo) ou uma condição inesperada seja atingida.
+
+```typescript
+import { VSLogLevel } from "vsrepo";
+
+const adapter = new DrizzleAdapter(db, {
+    table: userTable,
+    queryKey: "userTable",
+    logLevel: VSLogLevel.DEBUG,
+});
+```
+
+Em `VSLogLevel.DEBUG`, cada método loga o arg/condition resolvido do Drizzle que está prestes a rodar (o `where`, `columns`, `with`, etc. efetivamente enviados ao Drizzle) como uma linha `DEBUG`, além de uma linha de início/fim reportando quanto tempo a operação levou — surfaçada como `WARN` em vez de `DEBUG` quando excede o `logSlowThresholdMs` (ver abaixo).
+
+Além disso, `create`/`update`/`save`/`upsert` logam uma linha `DEBUG` extra por campo de relation sendo resolvido, pra você ver exatamente o que o adapter está fazendo com sua config de `relations` sem precisar ler o código-fonte:
+
+```
+[DEBUG] Resolved Drizzle arg for 'create'
+[DEBUG] 'create': resolving relations — fkHere: [address], fkThere: [posts, tags]
+[DEBUG] Relation 'address' (oto, fkHere): no pk given — creating a new related row.
+[DEBUG] Relation 'posts' (otm): resolving 3 item(s) — 2 to insert, 1 to link/update.
+[DEBUG] Relation 'posts' (otm, restriction=add): inserted 2, updated 1 item(s).
+[DEBUG] Relation 'tags' (mtm): resolving 2 item(s) — 0 to create, 2 to link.
+[DEBUG] Relation 'tags' (mtm, restriction=set): linked 2 item(s); unlinking any join row no longer present in the payload.
+```
+
+Esses logs de relation são propositalmente um resumo curto, de uma linha por relation (modo, contagens e o que está sendo inserido/linkado/removido), em vez de uma linha por registro — o suficiente pra acompanhar o que aconteceu com cada relation sem inundar o log em payloads grandes.
+
+O `logSlowThresholdMs` controla quando uma operação concluída é escalada de `DEBUG` pra `WARN`:
+
+```typescript
+new DrizzleAdapter(db, {
+    table: userTable,
+    queryKey: "userTable",
+    logSlowThresholdMs: 500,   // sinaliza qualquer coisa acima de 500ms como WARN — number
+    // logSlowThresholdMs: false, // ou: desativa os warnings de operação lenta por completo
+});
+```
+
+Diferente de uma duração simples, ele também aceita um `boolean`: `false` desativa os warnings de operação lenta por completo (toda operação passa a ser logada apenas como `DEBUG`, independente de quanto tempo levou), e `true` (ou omitir o campo) cai pro default de `300`ms.
+
 ## Limitações conhecidas
 
 | Limitação | Detalhes |
@@ -490,6 +537,6 @@ O `deleteManyReturning` roda um `findMany` no `where` informado primeiro (pra ca
 
 ## Requisitos
 
-- `vsrepo` ^2.4.0
+- `vsrepo` ^2.5.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20

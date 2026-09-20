@@ -38,6 +38,7 @@
 - [Dialect-specific behavior](#dialect-specific-behavior)
 - [`findMany` `distinct` support (`postgresql` only)](#findmany-distinct-support-postgresql-only)
 - [Transactions](#transactions)
+- [Logging](#logging)
 - [Known limitations](#known-limitations)
 - [Requirements](#requirements)
 
@@ -89,7 +90,6 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                     },
                 },
             }),
-            pkName: "id",
         });
     }
 
@@ -120,6 +120,8 @@ new DrizzleAdapter(db, {
     dialect: "postgresql",      // optional — auto-detected from `table`'s class when omitted; overrides detection when given
     relationsSchema: relations, // optional — the object returned by Drizzle's defineRelations(); see "relationsSchema" below
     relations: { ... },         // optional — see "relations in the constructor (write)" below
+    logLevel: VSLogLevel.WARN,  // optional — default: VSLogLevel.WARN
+    logSlowThresholdMs: 300,    // optional — default: 300; also accepts `false` (disables slow-operation warnings)
 });
 ```
 
@@ -130,8 +132,10 @@ new DrizzleAdapter(db, {
 | `dialect` | `"postgresql" \| "sqlite" \| "cockroach"` | No | The SQL dialect. Auto-detected from `table`'s own Drizzle class (`PgTable`/`CockroachTable`/`SQLiteTable`) when omitted — throws `NOT_SUPPORTED` if `table` isn't one of those three and `dialect` wasn't given. An explicit value always overrides detection. Affects placeholder syntax, `ILIKE` vs `LIKE`, and raw result interpretation. |
 | `relationsSchema` | The object returned by `defineRelations()` | No | Drives two things: recognizing `true`-marked relation fields in `select` at any nesting depth, and deriving most of `relations` below. See "`relationsSchema`" below. |
 | `relations` | `AdapterRelations<T>` | No | Relation write config — see below. |
+| `logLevel` | `VSLogLevel` (from `vsrepo`) | No | Minimum log level for the adapter's internal `VSLogger`. Defaults to `VSLogLevel.WARN`. Set it to `VSLogLevel.DEBUG` to see every resolved query — see "Logging" below. |
+| `logSlowThresholdMs` | `number \| boolean` | No | Duration (ms) above which a finished operation is logged as `WARN` instead of `DEBUG`, flagging a slow query. `false` disables slow-operation warnings entirely; `true` (or omitting the field) uses the default of `300`. |
 
-The config is validated at construction time — an invalid `table`/`queryKey`/`dialect`/`relationsSchema`/`relations` throws a `VSRepoAdapterError` naming the offending field.
+The config is validated at construction time — an invalid `table`/`queryKey`/`dialect`/`relationsSchema`/`relations`/`logLevel`/`logSlowThresholdMs` throws a `VSRepoAdapterError` naming the offending field.
 
 ## Relations
 
@@ -358,7 +362,7 @@ For to-many relations (`otm`/`mtm`), items in the stored record and items in `ob
 
 The adapter implements the 8 abstract methods `VSRepository`'s `increment`/`decrement`/`multiply`/`divide`/`sum`/`average`/`min`/`max` delegate to: `incrementOne`, `decrementOne`, `multiplyOne`, `divideOne`, `sum`, `average`, `min`, `max`.
 
-- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` translate into raw SQL expressions — ``sql`${column} + ${value}` `` (and `-`/`*`/`/`) — so the operation is evaluated **server-side** against the row's *current* value (`UPDATE ... SET field = field + value`), not as a fetch-then-save round trip on the client. The adapter reads the row's pk first, applies the atomic update, then re-reads the full entity to return.
+- `incrementOne`/`decrementOne`/`multiplyOne`/`divideOne` translate into raw SQL expressions — ``sql`${column} + ${value}` `` (and `-`/`*`/`/`) — so the operation is evaluated **server-side** against the row's *current* value (`UPDATE ... SET field = field + value`), not as a fetch-then-save round trip on the client. The adapter locates the row by `where` first, applies the atomic update, and then **re-reads** the full row (honoring `select`/`relations`/`order`) — an update-then-read flow identical to `update`, so columns maintained by `$onUpdate`/UPDATE triggers and relations all come back current.
 - `sum`/`average`/`min`/`max` translate into Drizzle's `sum()`/`avg()`/`min()`/`max()` aggregate functions. The raw result (`number`, `bigint`, `string`, or `null`) is normalized to `number | null` — `null` is returned as-is (mirroring SQL's aggregate behavior over an empty set), and non-number values are converted via `Number()`.
 
 ```typescript
@@ -477,6 +481,49 @@ await userRepository.transaction(async tx => {
 
 `deleteManyReturning` runs a `findMany` on the given `where` first (to capture the records and their PKs) and then deletes by `inArray(pk, pks)` instead of re-applying `where`. This means the deleted rows are always exactly the ones returned, even if another row starts or stops matching `where` between the two steps. It does not make the operation fully atomic, though: a row can still be concurrently modified or deleted between the `findMany` and the delete by pk, so a returned record's non-pk fields may be stale, or its pk may no longer match any row by the time the delete runs (which silently deletes 0 rows for it, without erroring). Run inside a `transaction()` at a higher isolation level if you need strict consistency.
 
+## Logging
+
+The adapter uses `VSLogger` (from `vsrepo`) internally. Set `logLevel` in the constructor config to control verbosity; it defaults to `VSLogLevel.WARN`, so nothing is logged unless a query is slow (see `logSlowThresholdMs` below) or an unexpected condition is hit.
+
+```typescript
+import { VSLogLevel } from "vsrepo";
+
+const adapter = new DrizzleAdapter(db, {
+    table: userTable,
+    queryKey: "userTable",
+    logLevel: VSLogLevel.DEBUG,
+});
+```
+
+At `VSLogLevel.DEBUG`, every method logs the resolved Drizzle arg/condition it's about to run (the `where`, `columns`, `with`, etc. actually sent to Drizzle) as a `DEBUG` line, plus a start/end line reporting how long the operation took — surfaced as a `WARN` instead of `DEBUG` when it exceeds `logSlowThresholdMs` (see below).
+
+On top of that, `create`/`update`/`save`/`upsert` log one extra `DEBUG` line per relation field being resolved, so you can see exactly what the adapter is doing with your `relations` config without reading the source:
+
+```
+[DEBUG] Resolved Drizzle arg for 'create'
+[DEBUG] 'create': resolving relations — fkHere: [address], fkThere: [posts, tags]
+[DEBUG] Relation 'address' (oto, fkHere): no pk given — creating a new related row.
+[DEBUG] Relation 'posts' (otm): resolving 3 item(s) — 2 to insert, 1 to link/update.
+[DEBUG] Relation 'posts' (otm, restriction=add): inserted 2, updated 1 item(s).
+[DEBUG] Relation 'tags' (mtm): resolving 2 item(s) — 0 to create, 2 to link.
+[DEBUG] Relation 'tags' (mtm, restriction=set): linked 2 item(s); unlinking any join row no longer present in the payload.
+```
+
+These relation logs are intentionally a short, one-line-per-relation summary (mode, counts, and what's being inserted/linked/removed) rather than a line per row — enough to follow what happened to each relation without flooding the log on large payloads.
+
+`logSlowThresholdMs` controls when a finished operation is escalated from `DEBUG` to `WARN`:
+
+```typescript
+new DrizzleAdapter(db, {
+    table: userTable,
+    queryKey: "userTable",
+    logSlowThresholdMs: 500,   // flag anything over 500ms as WARN — number
+    // logSlowThresholdMs: false, // or: disable slow-operation warnings entirely
+});
+```
+
+Unlike a plain duration, it also accepts a `boolean`: `false` disables slow-operation warnings altogether (every operation is then only ever logged at `DEBUG`, regardless of how long it took), and `true` (or omitting the field) falls back to the default of `300`ms.
+
 ## Known limitations
 
 | Limitation | Details |
@@ -490,6 +537,6 @@ await userRepository.transaction(async tx => {
 
 ## Requirements
 
-- `vsrepo` ^2.4.0
+- `vsrepo` ^2.5.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20

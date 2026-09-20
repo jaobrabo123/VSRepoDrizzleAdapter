@@ -1,6 +1,6 @@
 {
   "name": "@vsrepo/drizzle-adapter",
-  "version": "1.0.0-alpha.2",
+  "version": "1.0.0-alpha.3",
   "author": {
     "email": "joaodev.azevedo@outlook.com",
     "url": "https://github.com/jaobrabo123",
@@ -39,6 +39,7 @@
     }
   },
   "bugs": {
+    "email": "joaodev.azevedo@outlook.com",
     "url": "https://github.com/jaobrabo123/VSRepoDrizzleAdapter/issues"
   },
   "description": "VSRepository adapter implementation backed by Drizzle",
@@ -48,7 +49,8 @@
   "files": [
     "dist",
     "README.md",
-    "README.pt-BR.md"
+    "README.pt-BR.md",
+    "CHANGELOG.md"
   ],
   "homepage": "https://github.com/jaobrabo123/VSRepoDrizzleAdapter#readme",
   "keywords": [
@@ -75,6 +77,6 @@
   "types": "./dist/index.d.ts",
   "peerDependencies": {
     "drizzle-orm": "^1.0.0-rc.4",
-    "vsrepo": "^2.4.0"
+    "vsrepo": "^2.5.0"
   }
 }

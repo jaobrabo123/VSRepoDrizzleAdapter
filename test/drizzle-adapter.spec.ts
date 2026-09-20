@@ -1095,10 +1095,16 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
     describe("incrementOne / decrementOne / multiplyOne / divideOne (Post.views)", () => {
         let postAdapter: DrizzleAdapter<Post>;
+        let postRelationsAdapter: DrizzleAdapter<Post>;
         let author: User;
 
         beforeEach(async () => {
             postAdapter = new DrizzleAdapter<Post>(db, { queryKey: "postTable", table: postTable });
+            postRelationsAdapter = new DrizzleAdapter<Post>(db, {
+                queryKey: "postTable",
+                table: postTable,
+                relationsSchema: relations,
+            });
             author = await createUser({ email: "autor@example.com" });
         });
 
@@ -1138,6 +1144,104 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
             await expect(postAdapter.incrementOne("views", 1, { id: crypto.randomUUID() })).rejects.toThrow(
                 VSRepoAdapterError,
             );
+        });
+
+        it("incrementOne com 'select' retorna só os campos pedidos, com o campo atualizado", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postAdapter.incrementOne(
+                "views",
+                5,
+                { id: post.id },
+                { select: { id: true, views: true } },
+            );
+
+            expect(result.views).toBe(15);
+            expect(Object.keys(result).sort()).toEqual(["id", "views"]);
+        });
+
+        it("incrementOne com 'select' sem a pk usa a pk internamente e não a retorna", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postAdapter.incrementOne("views", 5, { id: post.id }, { select: { views: true } });
+
+            expect(result.views).toBe(15);
+            expect(Object.keys(result)).toEqual(["views"]);
+        });
+
+        it("incrementOne com 'select' sem o campo alvo não injeta o campo e ainda aplica o update", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postAdapter.incrementOne("views", 5, { id: post.id }, { select: { id: true } });
+
+            expect(Object.keys(result)).toEqual(["id"]);
+            const [stored] = await db.select().from(postTable).where(eq(postTable.id, post.id));
+            expect(stored?.views).toBe(15);
+        });
+
+        it("incrementOne com 'select' sem o campo alvo ainda lança NOT_FOUND quando nada casa com o where", async () => {
+            await expect(
+                postAdapter.incrementOne("views", 1, { id: crypto.randomUUID() }, { select: { id: true } }),
+            ).rejects.toThrow(VSRepoAdapterError);
+        });
+
+        it("incrementOne com 'select' só de relation retorna a relation e nenhum escalar", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postRelationsAdapter.incrementOne(
+                "views",
+                5,
+                { id: post.id },
+                { select: { user: true } },
+            );
+
+            expect(result.user?.id).toBe(author.id);
+            expect(result).not.toHaveProperty("id");
+            expect(result).not.toHaveProperty("views");
+        });
+
+        it("incrementOne com 'select' de campo + relation retorna ambos, com o campo atualizado", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postRelationsAdapter.incrementOne(
+                "views",
+                5,
+                { id: post.id },
+                { select: { views: true, user: true } },
+            );
+
+            expect(result.views).toBe(15);
+            expect(result.user?.id).toBe(author.id);
+            expect(Object.keys(result).sort()).toEqual(["user", "views"]);
+        });
+
+        it("incrementOne sem 'select' retorna a linha completa, com colunas mantidas por '$onUpdate' atualizadas", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postAdapter.incrementOne("views", 5, { id: post.id });
+
+            const [stored] = await db.select().from(postTable).where(eq(postTable.id, post.id));
+            expect(result.views).toBe(15);
+            // `updatedAt` has `$onUpdate` (see dev/drizzle/schema.ts). The returned value must
+            // equal what the DB actually persisted — not the pre-write snapshot.
+            expect(result.updatedAt.getTime()).toBe(stored!.updatedAt.getTime());
+        });
+
+        it("incrementOne sem 'select' retorna todas as colunas escalares", async () => {
+            const post = await createPost(author.id, { views: 10 });
+
+            const result = await postAdapter.incrementOne("views", 5, { id: post.id });
+
+            expect(Object.keys(result).sort()).toEqual([
+                "categoryId",
+                "content",
+                "createdAt",
+                "id",
+                "title",
+                "updatedAt",
+                "userId",
+                "views",
+            ]);
         });
     });
 

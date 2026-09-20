@@ -51,7 +51,6 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                     posts: { mode: "otm", restriction: "add", table: postTable, fkThere: "userId" },
                 },
             }),
-            pkName: "id",
             logLevel: VSLogLevel.ERROR,
         });
     }
@@ -106,7 +105,6 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
                     },
                 },
             }),
-            pkName: "id",
             logLevel: VSLogLevel.ERROR,
         });
     }
@@ -135,7 +133,6 @@ class PostTagsRepository extends VSRepository<Post, string, MyOrmTypes> {
                     },
                 },
             }),
-            pkName: "id",
             logLevel: VSLogLevel.ERROR,
         });
     }
@@ -157,7 +154,6 @@ class AddressRepository extends VSRepository<Address, string, MyOrmTypes> {
                     user: { mode: "oto", restriction: "set", table: userTable, fkHere: "userId" },
                 },
             }),
-            pkName: "id",
             logLevel: VSLogLevel.ERROR,
         });
     }

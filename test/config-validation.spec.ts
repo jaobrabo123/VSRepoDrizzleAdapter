@@ -2,7 +2,7 @@ import { pgTable, varchar } from "drizzle-orm/pg-core";
 import { sqliteTable, text as sqliteText } from "drizzle-orm/sqlite-core";
 import { mysqlTable, varchar as mysqlVarchar } from "drizzle-orm/mysql-core";
 import { defineRelations } from "drizzle-orm";
-import { AdapterErrorCode, VSRepoAdapterError } from "vsrepo";
+import { AdapterErrorCode, VSLogLevel, VSRepoAdapterError } from "vsrepo";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import { createFakeDb } from "./helpers/fake-db.helper.js";
 import { addressTable, categoryTable, postTable, postTagTable, tagTable, userTable } from "../dev/drizzle/schema.js";
@@ -849,5 +849,88 @@ describe("DrizzleAdapter — 'relationsSchema' (derivação de 'relations' a par
                 },
             });
         }).not.toThrow();
+    });
+});
+
+describe("DrizzleAdapter — validação de 'logLevel' e 'logSlowThresholdMs'", () => {
+    it("não lança quando 'logLevel' e 'logSlowThresholdMs' não são passados (usa os defaults)", () => {
+        expect(() => {
+            new DrizzleAdapter(createFakeDb(["userTable"]), { table: userTable, queryKey: "userTable" });
+        }).not.toThrow();
+    });
+
+    it("aceita um 'logLevel' válido (VSLogLevel.DEBUG)", () => {
+        expect(() => {
+            new DrizzleAdapter(createFakeDb(["userTable"]), {
+                table: userTable,
+                queryKey: "userTable",
+                logLevel: VSLogLevel.DEBUG,
+            });
+        }).not.toThrow();
+    });
+
+    it("é lançado com code 'INVALID_ADAPTER_CONFIG' quando 'logLevel' não é um VSLogLevel válido", () => {
+        try {
+            new DrizzleAdapter(createFakeDb(["userTable"]), {
+                table: userTable,
+                queryKey: "userTable",
+                logLevel: "NOT_A_LEVEL" as any,
+            });
+            throw new Error("deveria ter lançado VSRepoAdapterError");
+        } catch (err: any) {
+            expect(err).toBeInstanceOf(VSRepoAdapterError);
+            expect(err.code).toBe(AdapterErrorCode.INVALID_ADAPTER_CONFIG);
+        }
+    });
+
+    it.each([1, 300, 5000])("aceita um 'logSlowThresholdMs' numérico válido (%d)", value => {
+        expect(() => {
+            new DrizzleAdapter(createFakeDb(["userTable"]), {
+                table: userTable,
+                queryKey: "userTable",
+                logSlowThresholdMs: value,
+            });
+        }).not.toThrow();
+    });
+
+    it.each([true, false])("aceita um 'logSlowThresholdMs' booleano válido (%s)", value => {
+        expect(() => {
+            new DrizzleAdapter(createFakeDb(["userTable"]), {
+                table: userTable,
+                queryKey: "userTable",
+                logSlowThresholdMs: value,
+            });
+        }).not.toThrow();
+    });
+
+    it.each([0, -1, -300])(
+        "é lançado com code 'INVALID_ADAPTER_CONFIG' quando 'logSlowThresholdMs' é um número <= 0 (%d)",
+        value => {
+            try {
+                new DrizzleAdapter(createFakeDb(["userTable"]), {
+                    table: userTable,
+                    queryKey: "userTable",
+                    logSlowThresholdMs: value,
+                });
+                throw new Error("deveria ter lançado VSRepoAdapterError");
+            } catch (err: any) {
+                expect(err).toBeInstanceOf(VSRepoAdapterError);
+                expect(err.code).toBe(AdapterErrorCode.INVALID_ADAPTER_CONFIG);
+            }
+        },
+    );
+
+    it("é lançado com code 'INVALID_ADAPTER_CONFIG' quando 'logSlowThresholdMs' não é number nem boolean", () => {
+        try {
+            new DrizzleAdapter(createFakeDb(["userTable"]), {
+                table: userTable,
+                queryKey: "userTable",
+                logSlowThresholdMs: "300" as any,
+            });
+            throw new Error("deveria ter lançado VSRepoAdapterError");
+        } catch (err: any) {
+            expect(err).toBeInstanceOf(VSRepoAdapterError);
+            expect(err.code).toBe(AdapterErrorCode.INVALID_ADAPTER_CONFIG);
+        }
     });
 });

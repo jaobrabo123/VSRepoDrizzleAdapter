@@ -3,7 +3,7 @@ import { Role } from "../enum/role.enum.js";
 
 export const timestamps = {
     createdAt: timestamp({ precision: 6, withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp({ precision: 6, withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp({ precision: 6, withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
 };
 
 export const roleEnum = pgEnum("UserRole", Role);
