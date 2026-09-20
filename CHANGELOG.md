@@ -6,6 +6,56 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.0.0-alpha.3] - 2026-09-19
+
+### Added
+- Internal `VSLogger` (from `vsrepo`) integration, mirroring how `VSRepoPrisma7Adapter`/`VSRepository` already use it:
+  - New `logLevel`/`logSlowThresholdMs` constructor config fields. `logLevel` defaults to `VSLogLevel.WARN`; `logSlowThresholdMs` accepts a `number` (ms) **or** a `boolean` — `false` disables slow-operation warnings entirely, `true`/omitted falls back to the default `300`ms
+  - Every public method (`findOne`/`findMany`/`create`/`update`/`save`/`upsert`/`delete`/`*Many*`/`merge`/`count`/`exists`/`sum`/`average`/`min`/`max`/`increment`/`decrement`/`multiply`/`divide`/`runInTransaction`/`query`) now logs a `DEBUG` line with the resolved Drizzle arg/condition, plus start/end perf timing (escalated to `WARN` when it exceeds `logSlowThresholdMs`)
+  - `create`/`update`/`save`/`upsert` additionally log a short, one-line-per-relation `DEBUG` summary while resolving `fkHere`/`fkThere` relation fields (mode, counts of inserted/linked/updated/removed items, and which relations are being resolved) — enough to follow what's happening with `relations` without flooding the log per-row
+  - `logLevel`/`logSlowThresholdMs` are validated at construction time (code `INVALID_ADAPTER_CONFIG` on an invalid value)
+  - New "Logging" README section (English/pt-BR)
+- `DrizzleAdapter` now implements the new optional `getPkName()` adapter method
+
+### Changed
+- `.github/workflows/publish.yml`: corrected the `DATABASE_URL` format used by the Postgres service, and fixed the workflow to apply the correct tag at publish/stage time
+- `vsrepo` peer dependency bumped to `^2.5.0`
+
+### Fixed
+- `runTransactional`: the transaction client (`tx`) is now correctly injected into every query that runs inside it — some relation-write queries were previously reaching the client passed to the top-level method instead of the active `tx`, which could let a relation write run outside the intended transaction
+- `sql-where.parser.ts`: `_some`/`_every`/`_none` quantifier filters on to-many relations now also work for `mtm` (many-to-many) relations — previously they threw `INVALID_DATA` ("can only be used on a to-many ('otm') relation"), so dynamic methods like `findByTagsEveryNameStartsWith` crashed at runtime. `mtm` filters are translated into `EXISTS`/`NOT EXISTS` correlated subqueries through the join `through` table (correlating `through.fkHere` to this table's pk and `through.fkThere` to the related table's pk)
+
+### Tests
+- Added tests covering `logLevel`/`logSlowThresholdMs` construction-time validation (valid/invalid `VSLogLevel`, numeric/boolean `logSlowThresholdMs`, `<= 0` and non-number/non-boolean rejection)
+- Added `sql-where.parser.spec.ts` tests covering `mtm` relations with `_some`/`_every`/`_none` (correlated `EXISTS`-through-`through` SQL, vacuous `_every`, mode guards for `_with`/`_without` and to-one relations, `otm` regression)
+
+---
+
+## [1.0.0-alpha.3] - 2026-09-19 (Português)
+
+### Adicionado
+- Integração com o `VSLogger` interno (de `vsrepo`), espelhando como o `VSRepoPrisma7Adapter`/`VSRepository` já o usam:
+  - Novos campos `logLevel`/`logSlowThresholdMs` na config do construtor. `logLevel` tem default `VSLogLevel.WARN`; `logSlowThresholdMs` aceita um `number` (ms) **ou** um `boolean` — `false` desativa os warnings de operação lenta por completo, `true`/omitido cai pro default de `300`ms
+  - Todo método público (`findOne`/`findMany`/`create`/`update`/`save`/`upsert`/`delete`/`*Many*`/`merge`/`count`/`exists`/`sum`/`average`/`min`/`max`/`increment`/`decrement`/`multiply`/`divide`/`runInTransaction`/`query`) agora loga uma linha `DEBUG` com o arg/condition resolvido do Drizzle, além do timing de início/fim (escalado pra `WARN` quando excede o `logSlowThresholdMs`)
+  - `create`/`update`/`save`/`upsert` também logam um resumo `DEBUG` curto, de uma linha por relation, ao resolver os campos de relation `fkHere`/`fkThere` (modo, contagens de itens inseridos/linkados/atualizados/removidos, e quais relations estão sendo resolvidas) — o suficiente pra acompanhar o que está acontecendo com `relations` sem inundar o log por registro
+  - `logLevel`/`logSlowThresholdMs` são validados no momento da construção (code `INVALID_ADAPTER_CONFIG` pra um valor inválido)
+  - Nova seção "Logging" no README (inglês/pt-BR)
+- `DrizzleAdapter` agora implementa o novo método opcional `getPkName()` dos adapters
+
+### Alterado
+- `.github/workflows/publish.yml`: corrigido o formato da `DATABASE_URL` usada pelo serviço do Postgres, e corrigido o workflow pra aplicar a tag correta no momento do publish/stage
+- Peer dependency `vsrepo` elevada pra `^2.5.0`
+
+### Corrigido
+- `runTransactional`: o client de transação (`tx`) agora é corretamente injetado em toda query que roda dentro dele — algumas queries de escrita de relations antes chegavam ao client passado pro método de nível superior em vez do `tx` ativo, o que podia deixar uma escrita de relation rodar fora da transação pretendida
+- `sql-where.parser.ts`: filtros quantificadores `_some`/`_every`/`_none` em relações to-many agora também funcionam para relações `mtm` (many-to-many) — antes lançavam `INVALID_DATA` ("can only be used on a to-many ('otm') relation"), então métodos dinâmicos como `findByTagsEveryNameStartsWith` quebravam em runtime. Filtros `mtm` são traduzidos em subqueries correlacionadas `EXISTS`/`NOT EXISTS` através da tabela de junção `through` (correlacionando `through.fkHere` à pk da tabela atual e `through.fkThere` à pk da tabela relacionada)
+
+### Testes
+- Adicionados testes cobrindo a validação em tempo de construção de `logLevel`/`logSlowThresholdMs` (`VSLogLevel` válido/inválido, `logSlowThresholdMs` numérico/booleano, rejeição de `<= 0` e de valores que não são number nem boolean)
+- Adicionados testes de `sql-where.parser.spec.ts` cobrindo relações `mtm` com `_some`/`_every`/`_none` (SQL de `EXISTS` correlacionado via `through`, `_every` vazio/vacuidade, guards de modo pra `_with`/`_without` e relações to-one, regressão de `otm`)
+
+---
+
 ## [1.0.0-alpha.2] - 2026-09-17
 
 ### Added

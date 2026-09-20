@@ -11,7 +11,11 @@ const db = drizzle({} as never);
 
 /** Compiles `condition` into a SQL string via `db.select().from(table).where(condition).toSQL()`. */
 function toSql(condition: unknown, table: Table = postTable): string {
-    const { sql } = (db as any).select({ id: (table as any).id }).from(table).where(condition).toSQL();
+    const { sql } = (db as any)
+        .select({ id: (table as any).id })
+        .from(table)
+        .where(condition)
+        .toSQL();
     return sql;
 }
 
@@ -107,7 +111,7 @@ describe("parseSqlWhere", () => {
             const condition = parseSqlWhere({ tags: { _none: { name: "backend" } } } as never, postCtx);
             const sql = toSql(condition, postTable);
 
-            expect(sql).toContain('not (exists');
+            expect(sql).toContain("not (exists");
             expect(sql).toContain('"PostTag"');
         });
 
@@ -115,7 +119,7 @@ describe("parseSqlWhere", () => {
             const condition = parseSqlWhere({ tags: { _every: { name: { startsWith: "b" } } } } as never, postCtx);
             const sql = toSql(condition, postTable);
 
-            expect(sql).toContain('not (exists');
+            expect(sql).toContain("not (exists");
             expect(sql).toContain('"PostTag"');
             expect(sql).toContain('not ("Tag"."name" like ');
         });
@@ -124,7 +128,7 @@ describe("parseSqlWhere", () => {
             const condition = parseSqlWhere({ tags: { _every: {} } } as never, postCtx);
             const sql = toSql(condition, postTable);
 
-            expect(sql).toContain('(1 = 1)');
+            expect(sql).toContain("(1 = 1)");
         });
 
         it("should still work when no relation column is filtered (bare _some)", () => {

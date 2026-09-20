@@ -8,6 +8,7 @@ import {
     DbArg,
     withDb,
     VSLogLevel,
+    InferMethodType,
 } from "vsrepo";
 import { db, relations } from "./dev/drizzle/db.js";
 import { DrizzleAdapter } from "./src/drizzle.adapter.js";
@@ -28,8 +29,8 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                     posts: { restriction: "set" },
                     address: { restriction: "set", nullable: true },
                 },
+                logLevel: VSLogLevel.INFO,
             }),
-            pkName: "id",
             logLevel: VSLogLevel.INFO,
         });
     }
@@ -47,7 +48,7 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
     declare deleteManyReturningByEmail: (email: string, options?: MethodOptions<User>) => Promise<User[]>;
 
     @DynamicMethod()
-    declare createManyReturning: (objs: DeepPartial<User>[], options?: MethodOptions<User>) => Promise<User[]>;
+    declare createManyReturning: InferMethodType<[objs: DeepPartial<User>[]], User[]>;
 }
 
 const userRepository = new UserRepository();
@@ -71,6 +72,7 @@ const newUser = await userRepository.save(
 console.log(newUser);
 
 newUser.address = {
+    id: crypto.randomUUID(),
     state: "ta",
     city: "tabes",
 } as Address;
@@ -127,11 +129,14 @@ class PostRepository extends VSRepository<Post, string, MyOrmTypes> {
                         restriction: "add",
                     },
                 },
+                logLevel: VSLogLevel.INFO,
             }),
-            pkName: "id",
-            logLevel: VSLogLevel.INFO,
+            logLevel: VSLogLevel.DEBUG,
         });
     }
+
+    @DynamicMethod()
+    declare findByTagsNoneOrderByCreatedAt: (options?: MethodOptions<Post>) => Promise<Post[]>;
 }
 
 const postRepository = new PostRepository();
@@ -166,10 +171,14 @@ await postRepository.transaction(async tx => {
 
     const postUpdated = await postRepository.patch(
         post.id,
-        { tags: [{ id: post.tags[0]!.id }] },
+        { tags: [{ name: "test" }] },
         { db: tx, relations: { category: true, tags: true, user: true } },
     );
     console.log(postUpdated);
+
+    await postRepository.getAll({ order: { id: "ASC" } });
+
+    console.log(await postRepository.findByTagsNoneOrderByCreatedAt({ db: tx }));
 
     const postIncremented = await postRepository.increment(postUpdated.id, "views", 50, {
         db: tx,
