@@ -90,7 +90,6 @@ class UserRepository extends VSRepository<User, string, MyOrmTypes> {
                     },
                 },
             }),
-            pkName: "id",
         });
     }
 
