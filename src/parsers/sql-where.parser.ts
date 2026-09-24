@@ -125,7 +125,7 @@ function buildFieldOperators(column: any, ops: PlainObject): SQL | undefined {
                     isPlainObject(val) && isFieldOperatorObject(val)
                         ? buildFieldOperators(column, val)
                         : eq(column, val);
-                if (inner) parts.push(not(inner));
+                if (inner) parts.push(not(inner)!);
                 break;
             }
 
@@ -239,7 +239,7 @@ function buildRelationCondition(
 
         if (value._none !== undefined) {
             const nested = parsePlainWhere(value._none as PlainObject | undefined, nestedCtx);
-            return not(buildExists(relation.table, nested ? and(join, nested)! : join, ctx));
+            return not(buildExists(relation.table, nested ? and(join, nested)! : join, ctx))!;
         }
 
         // `_every`: no related row may FAIL the filter — i.e. no row exists matching
@@ -248,7 +248,7 @@ function buildRelationCondition(
         // means "every row trivially satisfies nothing", so the condition is just `true`.
         const nested = parsePlainWhere(value._every as PlainObject | undefined, nestedCtx);
         if (!nested) return sql`(1 = 1)`;
-        return not(buildExists(relation.table, and(join, not(nested))!, ctx));
+        return not(buildExists(relation.table, and(join, not(nested))!, ctx))!;
     }
 
     if (isObjectRelationFilter(value)) {
@@ -360,7 +360,7 @@ function parseWhere(where: PlainObject | undefined | null, ctx: SqlWhereContext)
             const list = Array.isArray(value) ? value : [value];
             for (const v of list) {
                 const c = parseWhere(v, ctx);
-                if (c) parts.push(not(c));
+                if (c) parts.push(not(c)!);
             }
             continue;
         }

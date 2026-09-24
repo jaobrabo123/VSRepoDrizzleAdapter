@@ -383,7 +383,7 @@ const mostExpensive = await productRepository.max("price");
 
 `createMany`, `createManyReturning`, `updateMany` and `updateManyReturning` only accept scalar fields in their `data`. If your payload includes a field configured in `relations` (regardless of its value), the adapter throws a `VSRepoAdapterError` (code `NOT_SUPPORTED`) naming the offending field. For a full nested write, use `create`/`update`/`save` one record at a time, or wrap several `save` calls in a `saveMany`/`transaction`.
 
-> Note on return order: `createManyReturning` and `updateManyReturning` don't guarantee the returned records follow the order of the input payload. Their result comes from a second `findMany` (re-querying the inserted/updated rows by primary key), so the order is only guaranteed when you pass `order` in the options.
+> Note on return order: `createManyReturning` and `updateManyReturning` don't guarantee the returned records follow the order of the input payload. Their result comes from a second `findMany` (re-querying the inserted/updated rows by primary key).
 
 ## Dialect-specific behavior
 
