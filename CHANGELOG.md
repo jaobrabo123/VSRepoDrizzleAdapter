@@ -6,6 +6,28 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.0.0-alpha.4] - 2026-09-24
+
+### Fixed
+- Fixed TypeScript type errors in `src/parsers/sql-where.parser.ts` (surfacing under stricter type-checking): `not(...)` results are now properly narrowed with non-null assertions before being appended to the condition part lists in `buildFieldOperators` (the `_not` field operator), in `buildRelationCondition` (the `_none`/`_every` correlated-existence paths) and in `parseWhere`'s generic negation ahead of `buildCondition`
+
+### Documentation
+- `DrizzleAdapterConfig` (in `src/types/drizzle-adapter-config.type.ts`) and `AdapterRelation` (in `src/types/relation.type.ts`) JSDoc restructure: the property descriptions that previously lived in a single comment block above the type were moved into per-property `@property` docblocks, so each member (`table`, `dialect`, `queryKey`, `relations`, `relationsSchema`, `logLevel`, `logSlowThresholdMs`; and `restriction`, `mode`, `table`, `fkHere`, `fkThere`, `nullable`, `through`, `throughFkHere`, `throughFkThere`) is now documented individually in the editor
+- Simplified the "return order" note for `createManyReturning`/`updateManyReturning` in `README.md`/`README.pt-BR.md`
+
+---
+
+## [1.0.0-alpha.4] - 2026-09-24 (Português)
+
+### Corrigido
+- Corrigidos erros de tipagem do TypeScript em `src/parsers/sql-where.parser.ts` (aparecendo sob checagem de tipos mais estrita): os resultados de `not(...)` agora são corretamente estreitados com non-null assertions antes de serem adicionados às listas de condições em `buildFieldOperators` (o operador de campo `_not`), em `buildRelationCondition` (nos caminhos de existência correlacionada de `_none`/`_every`) e na negação genérica do `parseWhere` antes do `buildCondition`
+
+### Documentação
+- Reestruturação dos JSDocs de `DrizzleAdapterConfig` (em `src/types/drizzle-adapter-config.type.ts`) e de `AdapterRelation` (em `src/types/relation.type.ts`): as descrições de propriedade que antes viviam num único bloco de comentário acima do type foram movidas pra docblocks `@property` por propriedade, então cada membro (`table`, `dialect`, `queryKey`, `relations`, `relationsSchema`, `logLevel`, `logSlowThresholdMs`; e `restriction`, `mode`, `table`, `fkHere`, `fkThere`, `nullable`, `through`, `throughFkHere`, `throughFkThere`) agora é documentado individualmente no editor
+- Simplificada a nota sobre "ordem de retorno" de `createManyReturning`/`updateManyReturning` nos `README.md`/`README.pt-BR.md`
+
+---
+
 ## [1.0.0-alpha.3] - 2026-09-19
 
 ### Added
