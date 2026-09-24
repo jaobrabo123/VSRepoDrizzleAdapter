@@ -383,7 +383,7 @@ const mostExpensive = await productRepository.max("price");
 
 `createMany`, `createManyReturning`, `updateMany` e `updateManyReturning` só aceitam campos escalares no `data`. Se seu payload incluir um campo configurado em `relations` (independente do valor), o adapter lança um `VSRepoAdapterError` (code `NOT_SUPPORTED`) apontando o campo problemático. Pra um nested write completo, use `create`/`update`/`save` registro por registro, ou envolva várias chamadas de `save` num `saveMany`/`transaction`.
 
-> Nota sobre a ordem de retorno: `createManyReturning` e `updateManyReturning` não garantem que os registros devolvidos seguem a ordem do payload de entrada. O resultado vem de um segundo `findMany` (re-buscando as linhas inseridas/atualizadas pela primary key), então a ordem só é garantida quando você passa `order` nas options.
+> Nota sobre a ordem de retorno: `createManyReturning` e `updateManyReturning` não garantem que os registros devolvidos seguem a ordem do payload de entrada. O resultado vem de um segundo `findMany` (re-buscando as linhas inseridas/atualizadas pela primary key).
 
 ## Comportamento por dialeto
 
