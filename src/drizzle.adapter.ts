@@ -1367,4 +1367,13 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     override getPkName(): string {
         return this.pk;
     }
+
+    /**
+     * Returns the placeholder corresponding to the index, based on the database dialect.
+     *
+     * @publicApi
+     */
+    override getPlaceholder(index: number): string {
+        return this.dialect === "sqlite" ? "?" : `$${index + 1}`;
+    }
 }
