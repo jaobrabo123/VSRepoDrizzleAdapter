@@ -6,6 +6,42 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.0.0-alpha.5] - 2026-09-26
+
+### Added
+- `DrizzleAdapter` now implements the new optional `getPlaceholder()` adapter method (introduced in `vsrepo` 2.7.0), declaring the placeholder syntax for the Nth (0-based) bound parameter according to the dialect: `$1`, `$2`, ... for `postgresql`/`cockroach`, and `?` for `sqlite`. Implementing it is what enables, for this adapter, `VSSql` fragments and the `vsPlaceholders` constructor option on `VSRepository`/`@QueryMethod`
+- New `example` script: `bun run example` runs the example described below against a real Postgres
+
+### Changed
+- `vsrepo` peer dependency bumped from `^2.5.0` to `^2.7.0`
+
+### Documentation
+- `example.ts` is now an actual runnable example instead of a scratch test script: one `UserRepository` (configured with `relationsSchema` and the write-side `relations`) and a small `PostRepository`, followed by seven commented sections — nested writes, eager-loaded reads, `patch`, a `@DynamicMethod`, a `transaction`, atomic/aggregate methods, and a cleanup step. It imports the adapter from the package entry point (`./src/index.js`), can be run repeatedly without leaving records behind
+- Both READMEs now link to `example.ts` at the end of the "Basic usage" section, for readers who prefer a runnable script over snippets
+
+### Tests
+- New `test/vsrepository-raw-sql.spec.ts` (11 tests) covering the raw SQL and placeholder surface through a real `VSRepository`: `@QueryMethod` with `spreadArgs` + `vsPlaceholders: true` (`?1`), `withDb(tx)` inside a transaction (both the commit and the rollback path), `query()` with a `VSSql.sql` fragment and with a `VSSql.join`-built `IN (...)`, `query()` with the dialect's native `$1` (including `singleResult: true` and `modifying: true`), and `getPlaceholder()` per dialect (postgres `$1`/`$2`/..., sqlite `?`)
+
+---
+
+## [1.0.0-alpha.5] - 2026-09-26 (Português)
+
+### Adicionado
+- `DrizzleAdapter` agora implementa o novo método opcional `getPlaceholder()` dos adapters (introduzido no `vsrepo` 2.7.0), que declara a sintaxe de placeholder para o N-ésimo (base 0) parâmetro ligado de acordo com o dialeto: `$1`, `$2`, ... em `postgresql`/`cockroach`, e `?` em `sqlite`. Implementá-lo é o que habilita, neste adapter, os fragmentos `VSSql` e a option `vsPlaceholders` do `VSRepository`/`@QueryMethod`
+- Novo script `example`: `bun run example` roda o exemplo descrito abaixo contra um Postgres real
+
+### Alterado
+- Peer dependency `vsrepo` elevada de `^2.5.0` para `^2.7.0`
+
+### Documentação
+- `example.ts` agora é um exemplo rodável de verdade, em vez de um script de teste: um `UserRepository` (configurado com `relationsSchema` e o `relations` de escrita) e um `PostRepository` pequeno, seguidos de sete seções comentadas — escrita com relations aninhadas, leitura com eager loading, `patch`, um `@DynamicMethod`, uma `transaction`, métodos atômicos/agregados e uma etapa de limpeza. Ele importa o adapter pelo entry point do pacote (`./src/index.js`), pode ser rodado quantas vezes quiser sem deixar registros para trás
+- Ambos os READMEs agora linkam pro `example.ts` no fim da seção "Uso básico", pra quem prefere um script rodável a trechos soltos
+
+### Testes
+- Novo `test/vsrepository-raw-sql.spec.ts` (11 testes) cobrindo SQL cru e placeholders através de uma `VSRepository` real: `@QueryMethod` com `spreadArgs` + `vsPlaceholders: true` (`?1`), `withDb(tx)` dentro de uma transação (tanto o caminho de commit quanto o de rollback), `query()` com um fragmento `VSSql.sql` e com um `IN (...)` montado por `VSSql.join`, `query()` com o `$1` nativo do dialeto (incluindo `singleResult: true` e `modifying: true`), e o `getPlaceholder()` por dialeto (postgres `$1`/`$2`/..., sqlite `?`)
+
+---
+
 ## [1.0.0-alpha.4] - 2026-09-24
 
 ### Fixed
