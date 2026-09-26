@@ -111,6 +111,8 @@ The constructor `relations` above is spelled out in full for clarity. If your `d
 
 `DrizzleOrmTypes<DB>` ties `VSRepository`'s `getDbClient()`/`transaction()` return types to your real Drizzle types — see [Transactions](#transactions).
 
+> **Prefer to see it running?** [`example.ts`](./example.ts) is a complete, commented script — a repository with `relations` configured, then nested writes, eager-loaded reads and more — runnable against a real Postgres with `bun run example`.
+
 ## Constructor config
 
 ```typescript
@@ -537,6 +539,6 @@ Unlike a plain duration, it also accepts a `boolean`: `false` disables slow-oper
 
 ## Requirements
 
-- `vsrepo` ^2.5.0
+- `vsrepo` ^2.7.0
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20
