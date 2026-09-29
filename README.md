@@ -396,9 +396,22 @@ The adapter supports three SQL dialects, each with slightly different behavior:
 | Case-insensitive search (`contains`, `startsWith`, `endsWith` with `ignoreCase`) | `ILIKE` | `LIKE` (SQLite is case-insensitive for ASCII by default) | `ILIKE` |
 | Raw SQL placeholders | `$1`, `$2`, ... | `?` | `$1`, `$2`, ... |
 | Raw SQL execution (`query()`) | `db.execute(...)` | `db.run(...)` (`modifying: true`) / `db.all(...)` (reads) — SQLite clients don't expose `execute` | `db.execute(...)` |
-| Raw result interpretation | node-postgres row array | better-sqlite3 result shape | node-postgres row array |
+| Raw result interpretation | driver-specific | driver-specific | driver-specific |
 
 The dialect is auto-detected from the `table`'s own Drizzle class (`PgTable`/`CockroachTable`/`SQLiteTable`) when `dialect` isn't given in the config — see [Constructor config](#constructor-config). An explicit `dialect` always overrides detection.
+
+### Reading raw results is driver-specific, not dialect-specific
+
+Drizzle clients don't agree on the shape of the result a `run()`/`execute()` returns, so the adapter probes the candidates below **in order** and takes the first one that's actually a number. This is what produces the affected-row count for `query()` with `modifying: true` and for `createMany`/`deleteMany`/`updateMany`:
+
+| Dialect | Fields probed, in order | Drivers covered |
+| --- | --- | --- |
+| `postgresql` / `cockroach` | `rowCount`, `count`, `affectedRows`, `numberOfRecordsUpdated` | `rowCount` — `pg` (and therefore `cockroach`, `neon-serverless`, `vercel-postgres`) and `minipg`; `count` — `postgres-js`; `affectedRows` — `pglite`; `numberOfRecordsUpdated` — `aws-data-api` (Aurora Serverless v2) |
+| `sqlite` | `changes`, `rowsAffected`, `meta.changes`, `meta.rows_written` | `changes` — `better-sqlite3`, `bun:sqlite`, `node:sqlite`, `expo-sqlite` (and legacy `D1Result`); `rowsAffected` — `libsql`, `op-sqlite`; `meta.changes`/`meta.rows_written` — `d1` |
+
+For reads (`modifying: false`), SQLite clients return the row array directly from `all()`, so it passes through untouched. PostgreSQL/CockroachDB clients return a wrapper, so `.rows` is unwrapped — but the result is used as-is when there's no `.rows`, which is what `postgres-js` (its `RowList` **is** the row array) and `bun-sql` hand back.
+
+**Drivers with no counter at all.** A few drivers don't report how many rows a statement affected: `bun-sql` (both dialects), `sql-js`, `durable-sqlite` and `sqlite-cloud`. For those, `createMany`/`deleteMany`/`updateMany`/`query({ modifying: true })` report `0` **and log a warning once per adapter instance** naming the fields that were tried — the number is never silently wrong, but it also isn't meaningful. If you need a real count on those drivers, use a method that returns the affected records instead of relying on the reported count.
 
 ## `findMany` `distinct` support (`postgresql` only)
 
