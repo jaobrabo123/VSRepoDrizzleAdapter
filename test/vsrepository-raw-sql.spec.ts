@@ -10,13 +10,24 @@
 // imperativa (`QueryMethod()(Classe.prototype, "nome")`) em vez de
 // `@QueryMethod() declare nome: ...`; o efeito em runtime é idêntico.
 
+import { Param, SQL } from "drizzle-orm";
 import { sqliteTable, text as sqliteText } from "drizzle-orm/sqlite-core";
-import { DbArg, QueryMethod, VSLogLevel, VSSql, VSRepository, withDb } from "vsrepo";
+import {
+    AdapterErrorCode,
+    DbArg,
+    QueryMethod,
+    VSLogLevel,
+    VSRepoAdapterError,
+    VSSql,
+    VSRepository,
+    withDb,
+} from "vsrepo";
 import { Role } from "../dev/enum/role.enum.js";
 import { DrizzleAdapter } from "../src/drizzle.adapter.js";
+import { DrizzleDbLike } from "../src/types/drizzle-db-like.type.js";
 import { DrizzleOrmTypes } from "../src/types/drizzle-orm-types.type.js";
 import cleanDbHelper from "./helpers/clean-db.helper.js";
-import { createFakeDb } from "./helpers/fake-db.helper.js";
+import { createFakeDb, createFakePostgresDb, createFakeSqliteDb } from "./helpers/fake-db.helper.js";
 import { createUser } from "./helpers/fixtures.js";
 import { db } from "../dev/drizzle/db.js";
 import { userTable } from "../dev/drizzle/schema.js";
@@ -221,5 +232,225 @@ describe("DrizzleAdapter.getPlaceholder() (unidade, sem banco)", () => {
 
         expect(adapter.getPlaceholder(0)).toBe("?");
         expect(adapter.getPlaceholder(3)).toBe("?");
+    });
+});
+
+/**
+ * `query()` (SQL cru) despacha pro método do client certo pra cada dialect:
+ * `db.run`/`db.all` no `sqlite` e `db.execute` no `postgresql`/`cockroach`.
+ * Clients SQLite reais não expõem `execute`, então o dispatch anterior
+ * (sempre `db.execute`) quebrava com `TypeError: db.execute is not a
+ * function` em toda chamada de SQL cru.
+ *
+ * Unidade, sem banco: o client é um fake no formato de cada driver (ver
+ * `test/helpers/fake-db.helper.ts`).
+ */
+describe("DrizzleAdapter.query() — dispatch de SQL cru por dialect (unidade, sem banco)", () => {
+    const sqliteUsers = sqliteTable("users", { id: sqliteText().primaryKey() });
+
+    /** Adapter cujo dialect é derivado da própria tabela (`SQLiteTable` -> `sqlite`). */
+    function sqliteAdapter(client: DrizzleDbLike) {
+        return new DrizzleAdapter(client, { table: sqliteUsers, queryKey: "users" });
+    }
+
+    function postgresAdapter(client: DrizzleDbLike) {
+        return new DrizzleAdapter(client, { table: userTable, queryKey: "userTable" });
+    }
+
+    it("sqlite: leitura vai por 'all' e devolve as linhas como o client as devolveu (sem unwrap)", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        const rows = [{ id: "1" }, { id: "2" }];
+        vi.mocked(client.all!).mockResolvedValue(rows);
+
+        const result = await sqliteAdapter(client).query("SELECT id FROM users WHERE id = ?", {
+            args: ["1"],
+            modifying: false,
+        });
+
+        expect(client.all).toHaveBeenCalledTimes(1);
+        expect(client.run).not.toHaveBeenCalled();
+        // * client SQLite real não tem `execute` — e o adapter não deve nem tentar
+        expect(client.execute).toBeUndefined();
+        // * no postgres o retorno é desembrulhado (`result.rows`); no sqlite `all()` já
+        // * devolve o array de linhas direto, então ele passa intacto
+        expect(result).toBe(rows);
+    });
+
+    it("sqlite: statement modificadora vai por 'run' e devolve 'changes'", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        vi.mocked(client.run!).mockResolvedValue({ changes: 2 });
+
+        const result = await sqliteAdapter(client).query("DELETE FROM users WHERE id = ?", {
+            args: ["1"],
+            modifying: true,
+        });
+
+        expect(client.run).toHaveBeenCalledTimes(1);
+        expect(client.all).not.toHaveBeenCalled();
+        expect(client.execute).toBeUndefined();
+        expect(result).toBe(2);
+    });
+
+    it("sqlite: 'run' sem 'changes' no retorno resolve pra 0", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        vi.mocked(client.run!).mockResolvedValue({});
+
+        const result = await sqliteAdapter(client).query("DELETE FROM users", { modifying: true });
+
+        expect(result).toBe(0);
+    });
+
+    it("sqlite: o SQL resolvido chega ao 'all' como 'SQL' com o argumento linkado", async () => {
+        const client = createFakeSqliteDb(["users"]);
+
+        await sqliteAdapter(client).query("SELECT id FROM users WHERE id = ? AND name = ?", {
+            args: ["1", "Ana"],
+            modifying: false,
+        });
+
+        const [sqlArg] = vi.mocked(client.all!).mock.calls[0]!;
+        expect(sqlArg).toBeInstanceOf(SQL);
+        // * os valores dos args viram `Param`, na ordem, sem interpolação no texto
+        const bound = (sqlArg as SQL).queryChunks.filter(chunk => chunk instanceof Param).map(chunk => chunk.value);
+        expect(bound).toEqual(["1", "Ana"]);
+    });
+
+    it("postgresql: leitura vai por 'execute' e desembrulha 'rows'", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        const rows = [{ id: "1" }];
+        vi.mocked(client.execute!).mockResolvedValue({ rows });
+
+        const result = await postgresAdapter(client).query("SELECT id FROM users WHERE id = $1", {
+            args: ["1"],
+            modifying: false,
+        });
+
+        expect(client.execute).toHaveBeenCalledTimes(1);
+        expect(client.run).toBeUndefined();
+        expect(client.all).toBeUndefined();
+        expect(result).toBe(rows);
+    });
+
+    it("postgresql: statement modificadora vai por 'execute' e devolve 'rowCount'", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        vi.mocked(client.execute!).mockResolvedValue({ rowCount: 3 });
+
+        const result = await postgresAdapter(client).query("DELETE FROM users WHERE id = $1", {
+            args: ["1"],
+            modifying: true,
+        });
+
+        expect(client.execute).toHaveBeenCalledTimes(1);
+        expect(result).toBe(3);
+    });
+
+    it("postgresql: 'execute' sem 'rowCount' no retorno resolve pra 0", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        vi.mocked(client.execute!).mockResolvedValue({});
+
+        const result = await postgresAdapter(client).query("DELETE FROM users", { modifying: true });
+
+        expect(result).toBe(0);
+    });
+
+    it("cockroach: usa 'execute', igual ao postgresql", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        const rows = [{ id: "1" }];
+        vi.mocked(client.execute!).mockResolvedValue({ rows });
+
+        const adapter = new DrizzleAdapter(client, {
+            table: userTable,
+            queryKey: "userTable",
+            dialect: "cockroach",
+        });
+
+        const result = await adapter.query("SELECT id FROM users WHERE id = $1", { args: ["1"], modifying: false });
+
+        expect(client.execute).toHaveBeenCalledTimes(1);
+        expect(result).toBe(rows);
+    });
+
+    it("sqlite sem 'run': 'modifying' lança 'VSRepoAdapterError' (code 'NOT_SUPPORTED')", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        delete client.run;
+
+        await expect(sqliteAdapter(client).query("DELETE FROM users", { modifying: true })).rejects.toThrow(
+            VSRepoAdapterError,
+        );
+
+        try {
+            await sqliteAdapter(client).query("DELETE FROM users", { modifying: true });
+        } catch (err) {
+            expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.NOT_SUPPORTED);
+            expect((err as VSRepoAdapterError).message).toContain("'run'");
+        }
+    });
+
+    it("sqlite sem 'all': leitura lança 'VSRepoAdapterError' (code 'NOT_SUPPORTED')", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        delete client.all;
+
+        try {
+            await sqliteAdapter(client).query("SELECT id FROM users");
+            expect.unreachable("deveria ter lançado");
+        } catch (err) {
+            expect(err).toBeInstanceOf(VSRepoAdapterError);
+            expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.NOT_SUPPORTED);
+            expect((err as VSRepoAdapterError).message).toContain("'all'");
+        }
+    });
+
+    it("postgresql sem 'execute': lança 'VSRepoAdapterError' (code 'NOT_SUPPORTED')", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        delete client.execute;
+
+        try {
+            await postgresAdapter(client).query("SELECT id FROM users");
+            expect.unreachable("deveria ter lançado");
+        } catch (err) {
+            expect(err).toBeInstanceOf(VSRepoAdapterError);
+            expect((err as VSRepoAdapterError).code).toBe(AdapterErrorCode.NOT_SUPPORTED);
+            expect((err as VSRepoAdapterError).message).toContain("'execute'");
+        }
+    });
+
+    it("através de uma VSRepository real: '@QueryMethod' e 'query()' no sqlite também despacham pra 'run'/'all'", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        vi.mocked(client.all!).mockResolvedValue([{ id: "1" }]);
+        vi.mocked(client.run!).mockResolvedValue({ changes: 1 });
+
+        class SqliteUserRepository extends VSRepository<{ id: string }, string> {
+            constructor() {
+                super({
+                    adapter: new DrizzleAdapter(client, { table: sqliteUsers, queryKey: "users" }),
+                    logLevel: VSLogLevel.ERROR,
+                });
+            }
+        }
+
+        type SqliteUserRepositoryType = SqliteUserRepository & {
+            findByIdRaw(id: string): Promise<{ id: string }[]>;
+            deleteByIdRaw(id: string): Promise<number>;
+        };
+
+        QueryMethod("SELECT id FROM users WHERE id = ?", { spreadArgs: true })(
+            SqliteUserRepository.prototype,
+            "findByIdRaw",
+        );
+        QueryMethod("DELETE FROM users WHERE id = ?", { spreadArgs: true, modifying: true })(
+            SqliteUserRepository.prototype,
+            "deleteByIdRaw",
+        );
+
+        const repository = new SqliteUserRepository() as SqliteUserRepositoryType;
+
+        expect(await repository.findByIdRaw("1")).toEqual([{ id: "1" }]);
+        expect(client.all).toHaveBeenCalledTimes(1);
+
+        expect(await repository.deleteByIdRaw("1")).toBe(1);
+        expect(client.run).toHaveBeenCalledTimes(1);
+
+        expect(await repository.query("SELECT id FROM users")).toEqual([{ id: "1" }]);
+        expect(client.all).toHaveBeenCalledTimes(2);
     });
 });

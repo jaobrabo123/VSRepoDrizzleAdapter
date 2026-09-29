@@ -1,4 +1,15 @@
-import { avg, count as countFn, eq, inArray, max as maxFn, min as minFn, sql, sum as sumFn, Table } from "drizzle-orm";
+import {
+    avg,
+    count as countFn,
+    eq,
+    inArray,
+    max as maxFn,
+    min as minFn,
+    sql,
+    sum as sumFn,
+    SQLWrapper,
+    Table,
+} from "drizzle-orm";
 import {
     AdapterErrorCode,
     AdapterMethodOptions,
@@ -389,6 +400,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      *
      * Placeholders are dialect-aware: `$1, $2, ...` for PostgreSQL/CockroachDB, `?` for SQLite.
      *
+     * Dispatch is dialect-aware too: PostgreSQL/CockroachDB clients use `db.execute()`, while
+     * SQLite clients (which don't expose `execute`) use `db.run()` for modifying statements and
+     * `db.all()` for reads.
+     *
      * @param rawQuery - The raw SQL string.
      * @param options - Optional: `args` (bind parameters), `db` (transaction client), `modifying` (if `true`, returns affected row count instead of rows).
      * @returns The query result — rows for SELECT, affected count for modifying statements.
@@ -401,20 +416,62 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
         try {
             const sqlQuery = resolveRawSql(this.dialect, rawQuery, options?.args);
+            const modifying = options?.modifying ?? false;
             this.logger.logDebug("Resolved raw SQL for 'query'", {
                 rawQuery,
                 args: options?.args,
-                modifying: options?.modifying,
+                modifying,
             });
 
-            const result = await executor.execute(sqlQuery);
+            const result = await this.executeRawSql(executor, sqlQuery, modifying);
 
-            return resolveRawResult(this.dialect, result, options?.modifying ?? false) as R;
+            return resolveRawResult(this.dialect, result, modifying) as R;
         } catch (error) {
             throw mapDrizzleError(error, "query", this.dialect);
         } finally {
             this.logger.endPerformLog(start);
         }
+    }
+
+    /**
+     * Dispatches a resolved raw SQL fragment to the right Drizzle client method for the
+     * configured dialect.
+     *
+     * PostgreSQL/CockroachDB clients expose `execute()`. SQLite clients (`better-sqlite3`,
+     * `bun:sqlite`, `libsql`, ...) don't — they expose `run()` (for modifying statements,
+     * result carries `changes`) and `all()` (for reads, result is the row array directly).
+     */
+    private async executeRawSql(executor: DrizzleDbLike, sqlQuery: SQLWrapper, modifying: boolean): Promise<any> {
+        if (this.dialect === "sqlite") {
+            if (modifying) {
+                if (typeof executor.run !== "function") {
+                    throw new VSRepoAdapterError(
+                        "This SQLite client doesn't expose a 'run' method, required for modifying raw queries.",
+                        AdapterErrorCode.NOT_SUPPORTED,
+                        null,
+                    );
+                }
+                return await executor.run(sqlQuery);
+            }
+
+            if (typeof executor.all !== "function") {
+                throw new VSRepoAdapterError(
+                    "This SQLite client doesn't expose an 'all' method, required for raw queries.",
+                    AdapterErrorCode.NOT_SUPPORTED,
+                    null,
+                );
+            }
+            return await executor.all(sqlQuery);
+        }
+
+        if (typeof executor.execute !== "function") {
+            throw new VSRepoAdapterError(
+                "This client doesn't expose an 'execute' method, required for raw queries.",
+                AdapterErrorCode.NOT_SUPPORTED,
+                null,
+            );
+        }
+        return await executor.execute(sqlQuery);
     }
 
     /**
@@ -577,9 +634,14 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
         try {
             this.logger.logDebug(`'saveMany': saving ${objs.length} record(s)`);
-            return await this.runTransactional(options?.db, tx =>
-                Promise.all(objs.map(obj => this.save(obj, { ...options, db: tx }))),
-            );
+            return await this.runTransactional(options?.db, async tx => {
+                const saved: T[] = [];
+                for (let i = 0; i < objs.length; i++) {
+                    const obj = objs[i]!;
+                    saved.push(await this.save(obj, { ...options, db: tx }));
+                }
+                return saved;
+            });
         } catch (error) {
             throw mapDrizzleError(error, "saveMany", this.dialect);
         } finally {
@@ -1085,7 +1147,11 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      *
      * @publicApi
      */
-    async merge<K>(where: VSRepoWhere<T>, obj: DeepPartial<T>, options?: AdapterMethodOptions<T>): Promise<K & T> {
+    async merge<K extends DeepPartial<T>>(
+        where: VSRepoWhere<T>,
+        obj: K,
+        options?: AdapterMethodOptions<T>,
+    ): Promise<(K & T) | null> {
         const start = this.logger.startPerformLog("run merge");
 
         try {
@@ -1095,15 +1161,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             const result = await this.getQueryBuilder(options?.db).findFirst(readArg);
 
             if (!result) {
-                throw new VSRepoAdapterError(
-                    "'merge' found no record matching the given 'where'.",
-                    AdapterErrorCode.NOT_FOUND,
-                    null,
-                );
+                return null;
             }
 
-            return mergeEntities(result as PlainObject, obj as unknown as PlainObject, this.relations) as unknown as K &
-                T;
+            return mergeEntities(result as PlainObject, obj as PlainObject, this.relations) as K & T;
         } catch (error) {
             throw mapDrizzleError(error, "merge", this.dialect);
         } finally {
