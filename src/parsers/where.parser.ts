@@ -17,6 +17,16 @@
  *                                for ASCII there by default (`PRAGMA case_sensitive_like` is OFF unless the
  *                                app explicitly turns it on), so using the (nonexistent, dialect-specific)
  *                                `ilike` operator there would just be a SQL syntax error for no behavioral gain.
+ *  - `null`:                     { deletedAt: null }               -> { deletedAt: { isNull: true } }
+ *                                { deletedAt: { equals: null } }   -> { deletedAt: { isNull: true } }
+ *                                { deletedAt: { not: null } }      -> { deletedAt: { NOT: { isNull: true } } }
+ *                                A bare `null` can NOT be forwarded as-is: Drizzle's relational filter treats
+ *                                *any* plain object as a nested field filter and calls `Object.entries()` on it,
+ *                                and `typeof null === "object"` — so `{ deletedAt: null }` makes Drizzle throw
+ *                                `Cannot convert undefined or null to object`. `{ isNull: true }` is one of
+ *                                Drizzle's own field-filter keys and compiles to `IS NULL`. Note that
+ *                                `{ eq: null }` would NOT work here: Drizzle's `eq` renders `col = NULL`, which
+ *                                is never true in SQL — a silently wrong result, worse than the crash.
  *  - To-many relation (array):  { posts: { _some: { title: "x" } } } -> { posts: { title: "x" } }
  *                                Drizzle's relational filter has no native `every`/`none` semantics for
  *                                to-many relations (only an implicit `some`/exists filter) — `_every`/`_none`
@@ -85,6 +95,10 @@ function parseFieldOperators(value: PlainObject, dialect: SupportedDialects): Pl
                 break;
 
             case "equals":
+                if (val === null) {
+                    result.isNull = true;
+                    break;
+                }
                 result.eq = val;
                 break;
 
@@ -108,6 +122,10 @@ function parseFieldOperators(value: PlainObject, dialect: SupportedDialects): Pl
                 break;
 
             case "not":
+                if (val === null) {
+                    result.NOT = { isNull: true };
+                    break;
+                }
                 result.NOT = isPlainObject(val) && isFieldOperatorObject(val) ? parseFieldOperators(val, dialect) : val;
                 break;
 
@@ -148,9 +166,18 @@ function parseObjectRelationFilter(value: PlainObject, dialect: SupportedDialect
 
 /** Decides how to interpret the value of a single where field. */
 function parseFieldValue(value: unknown, dialect: SupportedDialects): unknown {
-    // Primitive values (string, number, boolean, Date, null, bigint) pass through
+    // `null` is translated to Drizzle's own `{ isNull: true }` filter instead of being
+    // passed through: the relational filter treats any plain object as a nested field
+    // filter and calls `Object.entries()` on it, and `typeof null === "object"` — so a
+    // bare `null` makes Drizzle throw `Cannot convert undefined or null to object`.
+    // (`{ eq: null }` would compile to `col = NULL`, never true in SQL — so not that.)
+    if (value === null) {
+        return { isNull: true };
+    }
+
+    // Primitive values (string, number, boolean, Date, bigint) pass through
     // as-is — Drizzle's own shorthand for `eq`.
-    if (value === null || typeof value !== "object" || value instanceof Date) {
+    if (typeof value !== "object" || value instanceof Date) {
         return value;
     }
 
