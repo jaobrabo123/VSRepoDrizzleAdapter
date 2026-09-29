@@ -396,9 +396,22 @@ O adapter suporta três dialetos SQL, cada um com comportamento ligeiramente dif
 | Busca case-insensitive (`contains`, `startsWith`, `endsWith` com `ignoreCase`) | `ILIKE` | `LIKE` (SQLite é case-insensitive pra ASCII por padrão) | `ILIKE` |
 | Placeholders de SQL raw | `$1`, `$2`, ... | `?` | `$1`, `$2`, ... |
 | Execução de SQL raw (`query()`) | `db.execute(...)` | `db.run(...)` (`modifying: true`) / `db.all(...)` (leituras) — clients SQLite não expõem `execute` | `db.execute(...)` |
-| Interpretação de resultado raw | array de linhas do node-postgres | shape de resultado do better-sqlite3 | array de linhas do node-postgres |
+| Interpretação de resultado raw | específico do driver | específico do driver | específico do driver |
 
 O dialeto é auto-detectado a partir da própria classe da `table` no Drizzle (`PgTable`/`CockroachTable`/`SQLiteTable`) quando `dialect` não é informado na config — ver [Config do construtor](#config-do-construtor). Um `dialect` explícito sempre sobrescreve a detecção.
+
+### Ler resultado raw é específico do *driver*, não do dialeto
+
+Os clients do Drizzle não concordam sobre o shape que `run()`/`execute()` devolve, então o adapter sonda os candidatos abaixo **em ordem** e usa o primeiro que for de fato um número. É isso que produz a contagem de linhas afetadas no `query()` com `modifying: true` e em `createMany`/`deleteMany`/`updateMany`:
+
+| Dialeto | Campos sondados, em ordem | Drivers cobertos |
+| --- | --- | --- |
+| `postgresql` / `cockroach` | `rowCount`, `count`, `affectedRows`, `numberOfRecordsUpdated` | `rowCount` — `pg` (e por consequência `cockroach`, `neon-serverless`, `vercel-postgres`) e `minipg`; `count` — `postgres-js`; `affectedRows` — `pglite`; `numberOfRecordsUpdated` — `aws-data-api` (Aurora Serverless v2) |
+| `sqlite` | `changes`, `rowsAffected`, `meta.changes`, `meta.rows_written` | `changes` — `better-sqlite3`, `bun:sqlite`, `node:sqlite`, `expo-sqlite` (e o legado `D1Result`); `rowsAffected` — `libsql`, `op-sqlite`; `meta.changes`/`meta.rows_written` — `d1` |
+
+Em leituras (`modifying: false`), clients SQLite devolvem o array de linhas direto do `all()`, então ele passa intacto. Clients PostgreSQL/CockroachDB devolvem um wrapper, então `.rows` é desembrulhado — mas o resultado é usado como está quando não existe `.rows`, que é o que o `postgres-js` (o `RowList` dele **é** o array de linhas) e o `bun-sql` devolvem.
+
+**Drivers sem contador nenhum.** Alguns drivers não informam quantas linhas a statement afetou: `bun-sql` (nos dois dialetos), `sql-js`, `durable-sqlite` e `sqlite-cloud`. Nesses, `createMany`/`deleteMany`/`updateMany`/`query({ modifying: true })` reportam `0` **e logam um aviso uma vez por instância do adapter** nomeando os campos tentados — o número nunca está silenciosamente errado, mas também não é significativo. Se precisar de uma contagem real nesses drivers, use um método que retorne os registros afetados em vez de confiar na contagem reportada.
 
 ## Suporte a `distinct` no `findMany` (só `postgresql`)
 
