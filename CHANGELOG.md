@@ -6,6 +6,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.0.0-alpha.7] - 2026-09-29
+
+### Fixed
+- Affected-row counts no longer resolve to `0` on drivers that don't return the field `better-sqlite3`/`node-postgres` use. The previous implementation assumed one shape per dialect, but the field holding the count is a property of the *driver*, not the dialect — so on SQLite clients that return `rowsAffected` (`libsql`, `op-sqlite`) and on PostgreSQL clients that return `count` (`postgres-js`), `affectedRows` (`pglite`) or `numberOfRecordsUpdated` (`aws-data-api`), `query()` with `modifying: true` and `createMany()`/`deleteMany()`/`updateMany()` all reported `0` for statements that had actually changed rows
+- Raw `query()` reads on `postgresql`/`cockroach` no longer return `undefined` with `postgres-js` and `bun-sql`. Those clients return the row array itself rather than a `{ rows }` wrapper, so reading `.rows` off it gave `undefined`; the result is now used as-is when there's no `.rows`
+
+### Changed
+- `src/resolvers/raw-result.resolver.ts` now probes the known fields for the configured dialect in order and takes the first one that's a number (`number` or `bigint`): `rowCount` → `count` → `affectedRows` → `numberOfRecordsUpdated` on `postgresql`/`cockroach`, and `changes` → `rowsAffected` → `meta.changes` → `meta.rows_written` on `sqlite`. Nested `meta.*` paths are read safely, so a non-object `meta` is skipped instead of throwing
+- When no known field is present, the count is `0` **and a `logWarn` is emitted once per adapter instance** naming the dialect and the fields that were tried. A missing counter is a static property of the configured driver, so warning on every call would only spam `console` — once per loop iteration, e.g. — without adding information. This covers drivers that genuinely don't report affected rows (`bun-sql` on both dialects, `sql-js`, `durable-sqlite`, `sqlite-cloud`) — the number is never silently wrong, but it isn't meaningful either, and the warning says so, pointing at the option of using a method that returns the affected records instead
+- `resolveRawResult` takes an optional `onUnrecognized` callback, which is what the adapter uses to emit that warning; the resolver itself stays free of logger dependencies
+
+### Documentation
+- Both READMEs' "Dialect-specific behavior" table now links to a new "Reading raw results is driver-specific, not dialect-specific" section listing every probed field per dialect, the drivers each one covers, and how to get a real count on the drivers that don't report one
+
+---
+
+## [1.0.0-alpha.7] - 2026-09-29 (Português)
+
+### Corrigido
+- Contagens de linhas afetadas não resolvem mais para `0` em drivers que não devolvem o campo que `better-sqlite3`/`node-postgres` usam. A implementação anterior assumia um shape por dialeto, mas o campo que guarda a contagem é propriedade do *driver*, não do dialeto — então em clients SQLite que devolvem `rowsAffected` (`libsql`, `op-sqlite`) e em clients PostgreSQL que devolvem `count` (`postgres-js`), `affectedRows` (`pglite`) ou `numberOfRecordsUpdated` (`aws-data-api`), `query()` com `modifying: true` e `createMany()`/`deleteMany()`/`updateMany()` reportavam `0` para statements que tinham alterado linhas de fato
+- Leituras raw de `query()` em `postgresql`/`cockroach` não devolvem mais `undefined` com `postgres-js` e `bun-sql`. Esses clients devolvem o próprio array de linhas em vez de um wrapper `{ rows }`, então ler `.rows` disso dava `undefined`; o resultado agora é usado como está quando não existe `.rows`
+
+### Alterado
+- `src/resolvers/raw-result.resolver.ts` agora sonda os campos conhecidos do dialeto configurado em ordem e usa o primeiro que for número (`number` ou `bigint`): `rowCount` → `count` → `affectedRows` → `numberOfRecordsUpdated` em `postgresql`/`cockroach`, e `changes` → `rowsAffected` → `meta.changes` → `meta.rows_written` em `sqlite`. Paths aninhados `meta.*` são lidos com segurança, então um `meta` que não é objeto é pulado em vez de estourar
+- Quando nenhum campo conhecido está presente, a contagem é `0` **e um `logWarn` é emitido uma vez por instância do adapter** nomeando o dialeto e os campos tentados. Falta de contador é propriedade estática do driver configurado, então avisar a cada chamada só poluiria o `console` — uma vez por iteração de loop, por exemplo — sem acrescentar informação. Isso cobre drivers que realmente não reportam linhas afetadas (`bun-sql` nos dois dialetos, `sql-js`, `durable-sqlite`, `sqlite-cloud`) — o número nunca está silenciosamente errado, mas também não é significativo, e o aviso diz isso, apontando a alternativa de usar um método que retorne os registros afetados
+- `resolveRawResult` recebe um callback opcional `onUnrecognized`, que é o que o adapter usa para emitir esse aviso; o resolver em si continua sem dependência de logger
+
+### Documentação
+- A tabela "Dialect-specific behavior" dos dois READMEs agora aponta para uma nova seção "Ler resultado raw é específico do *driver*, não do dialeto", listando cada campo sondado por dialeto, os drivers que cada um cobre, e como obter uma contagem real nos drivers que não reportam uma
+
+---
+
 ## [1.0.0-alpha.6] - 2026-09-29
 
 ### Fixed
