@@ -902,15 +902,114 @@ describe("DrizzleAdapter (integração com Postgres real)", () => {
 
             const merged = await userAdapter.merge({ id: user.id }, { name: "Ana Paula" });
 
-            expect(merged.name).toBe("Ana Paula");
+            expect(merged?.name).toBe("Ana Paula");
             const [stored] = await db.select().from(userTable).where(eq(userTable.id, user.id));
             expect(stored?.name).toBe("Ana");
         });
 
-        it("lança 'VSRepoAdapterError' (code 'NOT_FOUND') quando nenhum registro é encontrado", async () => {
-            await expect(userAdapter.merge({ id: crypto.randomUUID() }, { name: "X" })).rejects.toThrow(
-                VSRepoAdapterError,
-            );
+        it("devolve 'null' (em vez de lançar) quando nenhum registro é encontrado", async () => {
+            const merged = await userAdapter.merge({ id: crypto.randomUUID() }, { name: "X" });
+
+            expect(merged).toBeNull();
+        });
+
+        it("devolve 'null' também quando a 'where' não casa nada depois dos operadores", async () => {
+            const user = await createUser({ email: "ana@example.com", name: "Ana" });
+
+            const merged = await userAdapter.merge({ id: user.id, name: { startsWith: "Zzz" } }, { name: "X" });
+
+            expect(merged).toBeNull();
+        });
+    });
+
+    /**
+     * Filtro com `null` (o que o `softRemoveKey` do `VSRepository` injeta em toda
+     * leitura: `{ removedAt: null }`).
+     *
+     * Repassar o `null` cru quebrava o Drizzle com
+     * `TypeError: Cannot convert undefined or null to object` — a API relacional trata
+     * qualquer objeto como filtro de campo aninhado e chama `Object.entries()` nele, e
+     * `typeof null === "object"`. `{ eq: null }` também não serviria: o Drizzle geraria
+     * `col = NULL`, que nunca é verdadeiro em SQL (resultado silenciosamente errado).
+     */
+    describe("where com 'null' (coluna nullable)", () => {
+        let postAdapter: DrizzleAdapter<Post>;
+
+        beforeEach(() => {
+            postAdapter = new DrizzleAdapter<Post>(db, {
+                queryKey: "postTable",
+                table: postTable,
+                dialect: "postgresql",
+            });
+        });
+
+        it("filtra por '{ categoryId: null }' e acha só os posts sem categoria", async () => {
+            const author = await createUser({ email: "ana@example.com", name: "Ana" });
+            const category = await createCategory({ name: "Tech" });
+
+            const withCategory = await createPost(author.id, { categoryId: category.id });
+            const withoutCategory = await createPost(author.id);
+
+            const found = await postAdapter.findMany({ categoryId: null });
+
+            expect(found.map(post => post.id)).toEqual([withoutCategory.id]);
+            expect(found.map(post => post.id)).not.toContain(withCategory.id);
+        });
+
+        it("filtra por '{ categoryId: { equals: null } }' (mesmo resultado do 'null' cru)", async () => {
+            const author = await createUser({ email: "ana@example.com", name: "Ana" });
+            const category = await createCategory({ name: "Tech" });
+
+            const withCategory = await createPost(author.id, { categoryId: category.id });
+            const withoutCategory = await createPost(author.id);
+
+            const found = await postAdapter.findMany({ categoryId: { equals: null } });
+
+            expect(found.map(post => post.id)).toEqual([withoutCategory.id]);
+            expect(found.map(post => post.id)).not.toContain(withCategory.id);
+        });
+
+        it("filtra por '{ categoryId: { not: null } }' e acha só os posts COM categoria", async () => {
+            const author = await createUser({ email: "ana@example.com", name: "Ana" });
+            const category = await createCategory({ name: "Tech" });
+
+            const withCategory = await createPost(author.id, { categoryId: category.id });
+            await createPost(author.id);
+
+            const found = await postAdapter.findMany({ categoryId: { not: null } });
+
+            expect(found.map(post => post.id)).toEqual([withCategory.id]);
+        });
+
+        it("filtra por 'null' junto de um valor real no mesmo where", async () => {
+            const author = await createUser({ email: "ana@example.com", name: "Ana" });
+            const category = await createCategory({ name: "Tech" });
+
+            const withCategory = await createPost(author.id, { categoryId: category.id });
+            const withoutCategory = await createPost(author.id);
+
+            // * `id` bate, mas `categoryId` não é nulo -> a combinação não casa.
+            expect(await postAdapter.findMany({ id: withCategory.id, categoryId: null })).toEqual([]);
+
+            const found = await postAdapter.findMany({ id: withoutCategory.id, categoryId: null });
+            expect(found.map(post => post.id)).toEqual([withoutCategory.id]);
+
+            // * o mesmo `id`, agora com o operador inverso -> casa.
+            const inverse = await postAdapter.findMany({ id: withCategory.id, categoryId: { not: null } });
+            expect(inverse.map(post => post.id)).toEqual([withCategory.id]);
+        });
+
+        it("'count' e 'exists' também aceitam 'null' na where", async () => {
+            const author = await createUser({ email: "ana@example.com", name: "Ana" });
+            const category = await createCategory({ name: "Tech" });
+
+            await createPost(author.id, { categoryId: category.id });
+            await createPost(author.id);
+
+            expect(await postAdapter.count({ categoryId: null })).toBe(1);
+            expect(await postAdapter.exists({ categoryId: null })).toBe(true);
+            expect(await postAdapter.count({ categoryId: { not: null } })).toBe(1);
+            expect(await postAdapter.count({ categoryId: { equals: null } })).toBe(1);
         });
     });
 
