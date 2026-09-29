@@ -77,6 +77,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
     private readonly relationsResolver?: RelationsResolver;
     private readonly logger: VSLogger;
 
+    private warnedAboutMissingAffectedRows = false;
+
     /**
      * Creates a new Drizzle adapter instance.
      *
@@ -341,6 +343,39 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
         return typeof db?.rollback !== "function";
     }
 
+    /**
+     * Interprets the raw result of a modifying statement (`run()` on SQLite, `execute()` on
+     * PostgreSQL/CockroachDB) as an affected-row count.
+     *
+     * The counter's field name is driver-specific rather than dialect-specific, so
+     * `resolveRawResult` probes an ordered candidate list per dialect. When none of them matches
+     * — drivers that simply don't expose a counter, like `bun-sql`, `sql-js`, `durable-sqlite` and
+     * `sqlite-cloud` — the count is reported as `0` and a warning is logged naming the driver's
+     * dialect and the fields that were tried, instead of silently returning a wrong number.
+     *
+     * The warning is emitted **once per adapter instance**: a missing counter is a static property
+     * of the configured driver, so repeating it on every call would only add noise. The returned
+     * count is `0` on every call regardless.
+     *
+     * @param result - The raw value returned by the client's `run()`/`execute()`.
+     * @param operation - The adapter method asking for the count, reported in the warning message.
+     */
+    private resolveAffectedRows(result: unknown, operation: string): number {
+        return resolveRawResult(this.dialect, result, true, triedPaths => {
+            if (this.warnedAboutMissingAffectedRows) return;
+
+            this.warnedAboutMissingAffectedRows = true;
+
+            this.logger.logWarn(
+                `the configured '${this.dialect}' client didn't expose a known affected-rows field in its ` +
+                    `run/execute result (tried: ${triedPaths.map(path => path.join(".")).join(", ")}). ` +
+                    `Affected-row counts will be reported as 0 for every modifying operation on this adapter ` +
+                    `(first seen on '${operation}'). ` +
+                    `If you need a real count, consider a method that returns the affected records instead.`,
+            );
+        }) as number;
+    }
+
     private async runTransactional<R>(db: any, fn: (tx: DrizzleTransactionLike) => Promise<R>): Promise<R> {
         if (db && !this.isRootClient(db)) {
             this.logger.logDebug("Reusing an already-active transaction client");
@@ -404,6 +439,10 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * SQLite clients (which don't expose `execute`) use `db.run()` for modifying statements and
      * `db.all()` for reads.
      *
+     * Interpreting the raw result is driver-specific rather than dialect-specific: the field
+     * carrying the affected-row count is probed per dialect (see `resolveRawResult`), and drivers
+     * that don't expose one at all report `0` plus a warning instead of a silently wrong number.
+     *
      * @param rawQuery - The raw SQL string.
      * @param options - Optional: `args` (bind parameters), `db` (transaction client), `modifying` (if `true`, returns affected row count instead of rows).
      * @returns The query result — rows for SELECT, affected count for modifying statements.
@@ -425,7 +464,9 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
 
             const result = await this.executeRawSql(executor, sqlQuery, modifying);
 
-            return resolveRawResult(this.dialect, result, modifying) as R;
+            if (!modifying) return resolveRawResult(this.dialect, result, false) as R;
+
+            return this.resolveAffectedRows(result, "query") as R;
         } catch (error) {
             throw mapDrizzleError(error, "query", this.dialect);
         } finally {
@@ -438,8 +479,9 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
      * configured dialect.
      *
      * PostgreSQL/CockroachDB clients expose `execute()`. SQLite clients (`better-sqlite3`,
-     * `bun:sqlite`, `libsql`, ...) don't — they expose `run()` (for modifying statements,
-     * result carries `changes`) and `all()` (for reads, result is the row array directly).
+     * `bun:sqlite`, `libsql`, ...) don't — they expose `run()` (for modifying statements) and
+     * `all()` (for reads). The shape each one returns is driver-specific; see
+     * {@link resolveRawResult} for how the affected-row count is extracted from it.
      */
     private async executeRawSql(executor: DrizzleDbLike, sqlQuery: SQLWrapper, modifying: boolean): Promise<any> {
         if (this.dialect === "sqlite") {
@@ -733,9 +775,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             if (options?.ignoreConflicts) qb = qb.onConflictDoNothing();
 
             const result = await qb;
-            const affected = resolveRawResult(this.dialect, result, true) as number;
 
-            return { count: affected };
+            return { count: this.resolveAffectedRows(result, "createMany") };
         } catch (error) {
             throw mapDrizzleError(error, "createMany", this.dialect);
         } finally {
@@ -850,9 +891,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             this.logger.logDebug("Resolved Drizzle condition for 'deleteMany'", { where });
 
             const result = await (executor as any).delete(this.table).where(condition);
-            const affected = resolveRawResult(this.dialect, result, true) as number;
 
-            return { count: affected ?? 0 };
+            return { count: this.resolveAffectedRows(result, "deleteMany") };
         } catch (error) {
             throw mapDrizzleError(error, "deleteMany", this.dialect);
         } finally {
@@ -1036,9 +1076,8 @@ export class DrizzleAdapter<T, K extends DrizzleDbLike = DrizzleDbLike> extends 
             this.logger.logDebug("Resolved Drizzle arg for 'updateMany'", { data, where });
 
             const result = await (executor as any).update(this.table).set(data).where(condition);
-            const affected = resolveRawResult(this.dialect, result, true) as number;
 
-            return { count: affected ?? 0 };
+            return { count: this.resolveAffectedRows(result, "updateMany") };
         } catch (error) {
             throw mapDrizzleError(error, "updateMany", this.dialect);
         } finally {
