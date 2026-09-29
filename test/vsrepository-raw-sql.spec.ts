@@ -27,7 +27,7 @@ import { DrizzleAdapter } from "../src/drizzle.adapter.js";
 import { DrizzleDbLike } from "../src/types/drizzle-db-like.type.js";
 import { DrizzleOrmTypes } from "../src/types/drizzle-orm-types.type.js";
 import cleanDbHelper from "./helpers/clean-db.helper.js";
-import { createFakeDb, createFakePostgresDb, createFakeSqliteDb } from "./helpers/fake-db.helper.js";
+import { createFakeDb, createFakePostgresDb, createFakeSqliteDb, asRowList } from "./helpers/fake-db.helper.js";
 import { createUser } from "./helpers/fixtures.js";
 import { db } from "../dev/drizzle/db.js";
 import { userTable } from "../dev/drizzle/schema.js";
@@ -300,6 +300,75 @@ describe("DrizzleAdapter.query() — dispatch de SQL cru por dialect (unidade, s
         expect(result).toBe(0);
     });
 
+    // * O shape do run-result é do *driver*, não do dialeto: o libsql devolve o
+    // * `ResultSet` do @libsql/client, com a contagem em 'rowsAffected'.
+    it("sqlite (libsql): statement modificadora lê a contagem de 'rowsAffected'", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        vi.mocked(client.run!).mockResolvedValue({ rows: [], rowsAffected: 3, lastInsertRowid: 1n });
+
+        const result = await sqliteAdapter(client).query("DELETE FROM users WHERE id = ?", {
+            args: ["1"],
+            modifying: true,
+        });
+
+        expect(client.run).toHaveBeenCalledTimes(1);
+        expect(result).toBe(3);
+    });
+
+    it("sqlite (d1): statement modificadora lê a contagem de 'meta.rows_written'", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        vi.mocked(client.run!).mockResolvedValue({ meta: { changes: 4, rows_written: 4 } });
+
+        const result = await sqliteAdapter(client).query("DELETE FROM users", { modifying: true });
+
+        expect(result).toBe(4);
+    });
+
+    it("postgresql (postgres-js): statement modificadora lê a contagem de 'count'", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        vi.mocked(client.execute!).mockResolvedValue(asRowList([], 5));
+
+        const result = await postgresAdapter(client).query("DELETE FROM users WHERE id = $1", {
+            args: ["1"],
+            modifying: true,
+        });
+
+        expect(result).toBe(5);
+    });
+
+    it("postgresql (postgres-js): leitura devolve o RowList, que já É o array de linhas", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        const rowList = asRowList([{ id: "1" }], 1);
+        vi.mocked(client.execute!).mockResolvedValue(rowList);
+
+        // * Regressão: o RowList do postgres-js não tem '.rows', então ler isso
+        // * devolvia 'undefined' em vez das linhas.
+        const result = await postgresAdapter(client).query("SELECT id FROM users WHERE id = $1", {
+            args: ["1"],
+            modifying: false,
+        });
+
+        expect(result).toBe(rowList);
+    });
+
+    it("postgresql (pglite): statement modificadora lê a contagem de 'affectedRows'", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        vi.mocked(client.execute!).mockResolvedValue({ rows: [], affectedRows: 6 });
+
+        const result = await postgresAdapter(client).query("DELETE FROM users", { modifying: true });
+
+        expect(result).toBe(6);
+    });
+
+    it("postgresql (aws-data-api): statement modificadora lê 'numberOfRecordsUpdated'", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        vi.mocked(client.execute!).mockResolvedValue({ rows: [], numberOfRecordsUpdated: 8 });
+
+        const result = await postgresAdapter(client).query("DELETE FROM users", { modifying: true });
+
+        expect(result).toBe(8);
+    });
+
     it("sqlite: o SQL resolvido chega ao 'all' como 'SQL' com o argumento linkado", async () => {
         const client = createFakeSqliteDb(["users"]);
 
@@ -452,5 +521,163 @@ describe("DrizzleAdapter.query() — dispatch de SQL cru por dialect (unidade, s
 
         expect(await repository.query("SELECT id FROM users")).toEqual([{ id: "1" }]);
         expect(client.all).toHaveBeenCalledTimes(2);
+    });
+
+    it("através de uma VSRepository real: '@QueryMethod' modificador funciona no shape do libsql", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        // * `ResultSet` do @libsql/client, como o drizzle-orm/libsql devolve no `run()`.
+        vi.mocked(client.run!).mockResolvedValue({ rows: [], rowsAffected: 1, lastInsertRowid: 1n });
+
+        class SqliteUserRepository extends VSRepository<{ id: string }, string> {
+            constructor() {
+                super({
+                    adapter: new DrizzleAdapter(client, { table: sqliteUsers, queryKey: "users" }),
+                    logLevel: VSLogLevel.ERROR,
+                });
+            }
+        }
+
+        type SqliteUserRepositoryType = SqliteUserRepository & {
+            deleteByIdRaw(id: string): Promise<number>;
+        };
+
+        QueryMethod("DELETE FROM users WHERE id = ?", { spreadArgs: true, modifying: true })(
+            SqliteUserRepository.prototype,
+            "deleteByIdRaw",
+        );
+
+        const repository = new SqliteUserRepository() as SqliteUserRepositoryType;
+
+        expect(await repository.deleteByIdRaw("1")).toBe(1);
+    });
+});
+
+/**
+ * `createMany`/`deleteMany`/`updateMany` devolvem `CountResult`, e o valor vinha do mesmo
+ * `resolveRawResult(..., true)` do `query()` raw — então o shape driver-específico do run-result
+ * atingia os três, e não só a query crua. Aqui cada builder do client falso resolve direto
+ * (sem `.where()` encadeado) num shape de driver não-node-postgres.
+ */
+describe("DrizzleAdapter — contagem dos *Many por shape de driver", () => {
+    const sqliteUsers = sqliteTable("users", { id: sqliteText("id").primaryKey() });
+    const userTableForPg = sqliteTable("userTable", { id: sqliteText("id").primaryKey() });
+
+    /**
+     * Chain de builder: Promise resolvendo no valor dado, com `.set()`/`.where()`/`.values()`
+     * encadeando e devolvendo a mesma Promise (o adapter só faz `await` no resultado final).
+     * Usa uma Promise real em vez de um objeto com `then` manual para não quebrar a regra
+     * `no-thenable` do lint.
+     */
+    function chainResolvingTo(value: unknown): any {
+        const chain: any = Promise.resolve(value);
+
+        for (const method of ["set", "where", "values", "returning", "onConflictDoNothing"]) {
+            chain[method] = () => chain;
+        }
+
+        return chain;
+    }
+
+    /** A tabela aqui é uma `SQLiteTable`, então o dialeto precisa vir explícito para exercitar o ramo `postgresql`. */
+    function pgAdapter(client: DrizzleDbLike) {
+        return new DrizzleAdapter(client, {
+            table: userTableForPg,
+            queryKey: "userTable",
+            dialect: "postgresql",
+        }) as DrizzleAdapter<any, DrizzleDbLike>;
+    }
+
+    it("sqlite (libsql): 'deleteMany' devolve a contagem de 'rowsAffected', não 0", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        client.delete = vi.fn().mockReturnValue(chainResolvingTo({ rows: [], rowsAffected: 4, lastInsertRowid: 5n }));
+
+        const adapter = new DrizzleAdapter<any>(client, { table: sqliteUsers, queryKey: "users" });
+
+        expect(await adapter.deleteMany({ id: "1" })).toEqual({ count: 4 });
+    });
+
+    it("sqlite (libsql): 'updateMany' devolve a contagem de 'rowsAffected', não 0", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        client.update = vi.fn().mockReturnValue(chainResolvingTo({ rows: [], rowsAffected: 2, lastInsertRowid: 3n }));
+
+        const adapter = new DrizzleAdapter<any>(client, { table: sqliteUsers, queryKey: "users" });
+
+        expect(await adapter.updateMany({ id: "1" }, { id: "1" })).toEqual({ count: 2 });
+    });
+
+    it("sqlite (libsql): 'createMany' devolve a contagem de 'rowsAffected', não 0", async () => {
+        const client = createFakeSqliteDb(["users"]);
+        client.insert = vi.fn().mockReturnValue(chainResolvingTo({ rows: [], rowsAffected: 3, lastInsertRowid: 1n }));
+
+        const adapter = new DrizzleAdapter(client, { table: sqliteUsers, queryKey: "users" });
+
+        expect(await adapter.createMany([{ id: "1" }, { id: "2" }, { id: "3" }])).toEqual({ count: 3 });
+    });
+
+    it("postgresql (postgres-js): 'deleteMany' devolve a contagem de 'count', não 0", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        client.delete = vi.fn().mockReturnValue(chainResolvingTo(asRowList([], 7)));
+
+        const adapter = pgAdapter(client);
+
+        expect(await adapter.deleteMany({ id: "1" })).toEqual({ count: 7 });
+    });
+
+    it("postgresql (aws-data-api): 'updateMany' devolve 'numberOfRecordsUpdated', não 0", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        client.update = vi.fn().mockReturnValue(chainResolvingTo({ rows: [], numberOfRecordsUpdated: 9 }));
+
+        const adapter = pgAdapter(client);
+
+        expect(await adapter.updateMany({ id: "1" }, { id: "1" })).toEqual({ count: 9 });
+    });
+
+    it("driver sem contador exposto (bun-sql): devolve 0 e loga um aviso em vez de mentir calado", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        // * bun-sql devolve o array de linhas puro — não tem contagem nenhuma.
+        client.delete = vi.fn().mockReturnValue(chainResolvingTo([{ id: "1" }]));
+
+        const adapter = pgAdapter(client);
+        const warn = vi.spyOn((adapter as any).logger, "logWarn");
+
+        expect(await adapter.deleteMany({ id: "1" })).toEqual({ count: 0 });
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]![0]).toContain("rowCount");
+    });
+
+    // * Falta de contador é propriedade estática do driver, então avisar a cada chamada só
+    // * poluiria o console (uma vez por iteração de loop, por exemplo) sem acrescentar info.
+    it("avisa uma única vez por instância, mesmo em várias operações modificadoras", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        client.delete = vi.fn().mockReturnValue(chainResolvingTo([{ id: "1" }]));
+        client.update = vi.fn().mockReturnValue(chainResolvingTo([{ id: "1" }]));
+
+        const adapter = pgAdapter(client);
+        const warn = vi.spyOn((adapter as any).logger, "logWarn");
+
+        expect(await adapter.deleteMany({ id: "1" })).toEqual({ count: 0 });
+        expect(await adapter.updateMany({ id: "1" }, { id: "1" })).toEqual({ count: 0 });
+        expect(await adapter.deleteMany({ id: "2" })).toEqual({ count: 0 });
+
+        expect(warn).toHaveBeenCalledTimes(1);
+        // * O aviso cita a primeira operação que disparou.
+        expect(warn.mock.calls[0]![0]).toContain("first seen on 'deleteMany'");
+    });
+
+    it("uma instância nova do adapter avisa de novo — a dedup é por instância, não global", async () => {
+        const client = createFakePostgresDb(["userTable"]);
+        client.delete = vi.fn().mockReturnValue(chainResolvingTo([{ id: "1" }]));
+
+        const firstAdapter = pgAdapter(client);
+        const firstWarn = vi.spyOn((firstAdapter as any).logger, "logWarn");
+
+        expect(await firstAdapter.deleteMany({ id: "1" })).toEqual({ count: 0 });
+        expect(firstWarn).toHaveBeenCalledTimes(1);
+
+        const secondAdapter = pgAdapter(client);
+        const secondWarn = vi.spyOn((secondAdapter as any).logger, "logWarn");
+
+        expect(await secondAdapter.deleteMany({ id: "1" })).toEqual({ count: 0 });
+        expect(secondWarn).toHaveBeenCalledTimes(1);
     });
 });
