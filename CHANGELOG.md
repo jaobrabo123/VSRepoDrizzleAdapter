@@ -6,6 +6,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.0.0-alpha.6] - 2026-09-29
+
+### Fixed
+- `where` clauses with `null` no longer crash Drizzle's relational filter API with `TypeError: Cannot convert undefined or null to object`. A bare `null` is now translated to Drizzle's own `{ isNull: true }` filter (`IS NULL`) instead of being passed through: the relational filter treats *any* plain object as a nested field filter and calls `Object.entries()` on it, and `typeof null === "object"`. This is what every `softRemoveKey` (`{ removedAt: null }`) read went through, so it broke reads on every `VSRepository` configured with soft delete
+- `{ field: { equals: null } }` is now translated to `{ field: { isNull: true } }`, and `{ field: { not: null } }` to `{ field: { NOT: { isNull: true } } }` (`IS NOT NULL`), matching `src/parsers/sql-where.parser.ts`'s existing `equals`/`not` null semantics
+- `query()` (raw SQL) no longer calls `db.execute(...)` unconditionally — real Drizzle SQLite clients (`better-sqlite3`, `bun:sqlite`, `libsql`, ...) don't expose `execute`, only `run`/`all`, so every raw `query()` call on `sqlite` threw `TypeError: db.execute is not a function`. Dispatch is now dialect-aware: `sqlite` uses `db.run(...)` for `modifying: true` and `db.all(...)` for reads; `postgresql`/`cockroach` keep using `db.execute(...)`. If the configured client doesn't expose the expected method, the adapter now throws a `VSRepoAdapterError` (code `NOT_SUPPORTED`) instead of a raw `TypeError`
+
+### Changed
+- `DrizzleDbLike`'s `execute` is now optional, and it gained optional `run`/`all` methods, reflecting that SQLite clients don't implement `execute`
+- `vsrepo` peer dependency bumped to `^2.7.2`
+
+### Documentation
+- Both READMEs' intro paragraph and "Dialect-specific behavior" table now note that raw SQL execution goes through `db.run`/`db.all` on `sqlite` instead of `db.execute`
+
+---
+
+## [1.0.0-alpha.6] - 2026-09-29 (Português)
+
+### Corrigido
+- Cláusulas `where` com `null` não quebram mais a API de filtro relacional do Drizzle com `TypeError: Cannot convert undefined or null to object`. Um `null` cru agora é traduzido para o filtro `isNull` do próprio Drizzle (`IS NULL`) em vez de repassado: o filtro relacional trata *qualquer* objeto simples como filtro de campo aninhado e chama `Object.entries()` nele, e `typeof null === "object"`. É por isso que passavam todas as leituras com `softRemoveKey` (`{ removedAt: null }`), então isso quebrava a leitura de toda `VSRepository` configurada com soft delete
+- `{ field: { equals: null } }` agora é traduzido para `{ field: { isNull: true } }`, e `{ field: { not: null } }` para `{ field: { NOT: { isNull: true } } }` (`IS NOT NULL`), alinhado com a semântica de `null` que o `src/parsers/sql-where.parser.ts` já tinha para `equals`/`not`
+- `query()` (SQL raw) não chama mais `db.execute(...)` incondicionalmente — clients SQLite reais do Drizzle (`better-sqlite3`, `bun:sqlite`, `libsql`, ...) não expõem `execute`, só `run`/`all`, então toda chamada de `query()` raw em `sqlite` lançava `TypeError: db.execute is not a function`. O dispatch agora é dialect-aware: `sqlite` usa `db.run(...)` para `modifying: true` e `db.all(...)` para leituras; `postgresql`/`cockroach` continuam usando `db.execute(...)`. Se o client configurado não expõe o método esperado, o adapter agora lança `VSRepoAdapterError` (code `NOT_SUPPORTED`) em vez de um `TypeError` cru
+
+### Alterado
+- `execute` do `DrizzleDbLike` agora é opcional, e ele ganhou os métodos opcionais `run`/`all`, refletindo que clients SQLite não implementam `execute`
+- Peer dependency `vsrepo` elevada pra `^2.7.2`
+
+### Documentação
+- O parágrafo de introdução e a tabela "Comportamento por dialeto" de ambos os READMEs agora observam que a execução de SQL raw passa por `db.run`/`db.all` no `sqlite` em vez de `db.execute`
+
+---
+
 ## [1.0.0-alpha.5] - 2026-09-26
 
 ### Added

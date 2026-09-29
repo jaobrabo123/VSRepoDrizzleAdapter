@@ -1,6 +1,6 @@
 {
   "name": "@vsrepo/drizzle-adapter",
-  "version": "1.0.0-alpha.5",
+  "version": "1.0.0-alpha.6",
   "author": {
     "email": "joaodev.azevedo@outlook.com",
     "url": "https://github.com/jaobrabo123",
@@ -72,12 +72,14 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint": "oxlint --type-aware src/ test/",
-    "prepack": "bun run build"
+    "prepack": "bun run build",
+    "typecheck": "tsc --noEmit -p tsconfig.build.json",
+    "full-validation": "bun run typecheck && bun run lint && bun run format:check && bun run test"
   },
   "type": "module",
   "types": "./dist/index.d.ts",
   "peerDependencies": {
     "drizzle-orm": "^1.0.0-rc.4",
-    "vsrepo": "^2.7.0"
+    "vsrepo": "^2.7.2"
   }
 }

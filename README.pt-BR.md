@@ -13,7 +13,7 @@
 
 [Read in English](./README.md)
 
-> Implementação de `VSRepoAdapter` para o [VSRepository v2](https://github.com/jaobrabo123/VSRepository) usando [Drizzle ORM](https://orm.drizzle.team/). Traduz toda operação do `VSRepository` em chamadas do Drizzle — queries relacionais (`db.query`), query builders do core (`db.select`/`insert`/`update`/`delete`), e SQL raw via `db.execute` — resolvendo `VSRepoWhere`, `Ordering`, `select`/`relations` através de parsers dedicados e — quando uma config de `relations` é fornecida — resolvendo campos de relação em `create`/`update`/`upsert`/`save`/`merge` imperativamente.
+> Implementação de `VSRepoAdapter` para o [VSRepository v2](https://github.com/jaobrabo123/VSRepository) usando [Drizzle ORM](https://orm.drizzle.team/). Traduz toda operação do `VSRepository` em chamadas do Drizzle — queries relacionais (`db.query`), query builders do core (`db.select`/`insert`/`update`/`delete`), e SQL raw via `db.execute` (`db.run`/`db.all` no SQLite, que não expõe `execute`) — resolvendo `VSRepoWhere`, `Ordering`, `select`/`relations` através de parsers dedicados e — quando uma config de `relations` é fornecida — resolvendo campos de relação em `create`/`update`/`upsert`/`save`/`merge` imperativamente.
 
 ---
 
@@ -395,6 +395,7 @@ O adapter suporta três dialetos SQL, cada um com comportamento ligeiramente dif
 | --- | --- | --- | --- |
 | Busca case-insensitive (`contains`, `startsWith`, `endsWith` com `ignoreCase`) | `ILIKE` | `LIKE` (SQLite é case-insensitive pra ASCII por padrão) | `ILIKE` |
 | Placeholders de SQL raw | `$1`, `$2`, ... | `?` | `$1`, `$2`, ... |
+| Execução de SQL raw (`query()`) | `db.execute(...)` | `db.run(...)` (`modifying: true`) / `db.all(...)` (leituras) — clients SQLite não expõem `execute` | `db.execute(...)` |
 | Interpretação de resultado raw | array de linhas do node-postgres | shape de resultado do better-sqlite3 | array de linhas do node-postgres |
 
 O dialeto é auto-detectado a partir da própria classe da `table` no Drizzle (`PgTable`/`CockroachTable`/`SQLiteTable`) quando `dialect` não é informado na config — ver [Config do construtor](#config-do-construtor). Um `dialect` explícito sempre sobrescreve a detecção.
@@ -539,6 +540,6 @@ Diferente de uma duração simples, ele também aceita um `boolean`: `false` des
 
 ## Requisitos
 
-- `vsrepo` ^2.7.0
+- `vsrepo` ^2.7.2
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20

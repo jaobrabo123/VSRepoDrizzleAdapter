@@ -13,7 +13,7 @@
 
 [Ler em portugues](./README.pt-BR.md)
 
-> `VSRepoAdapter` implementation for [VSRepository v2](https://github.com/jaobrabo123/VSRepository) backed by [Drizzle ORM](https://orm.drizzle.team/). It translates every `VSRepository` operation into Drizzle calls — relational queries (`db.query`), core query builders (`db.select`/`insert`/`update`/`delete`), and raw SQL via `db.execute` — resolving `VSRepoWhere`, `Ordering`, `select`/`relations` through dedicated parsers, and — when a `relations` config is provided — resolving relation fields on `create`/`update`/`upsert`/`save`/`merge` imperatively.
+> `VSRepoAdapter` implementation for [VSRepository v2](https://github.com/jaobrabo123/VSRepository) backed by [Drizzle ORM](https://orm.drizzle.team/). It translates every `VSRepository` operation into Drizzle calls — relational queries (`db.query`), core query builders (`db.select`/`insert`/`update`/`delete`), and raw SQL via `db.execute` (`db.run`/`db.all` on SQLite, which doesn't expose `execute`) — resolving `VSRepoWhere`, `Ordering`, `select`/`relations` through dedicated parsers, and — when a `relations` config is provided — resolving relation fields on `create`/`update`/`upsert`/`save`/`merge` imperatively.
 
 ---
 
@@ -395,6 +395,7 @@ The adapter supports three SQL dialects, each with slightly different behavior:
 | --- | --- | --- | --- |
 | Case-insensitive search (`contains`, `startsWith`, `endsWith` with `ignoreCase`) | `ILIKE` | `LIKE` (SQLite is case-insensitive for ASCII by default) | `ILIKE` |
 | Raw SQL placeholders | `$1`, `$2`, ... | `?` | `$1`, `$2`, ... |
+| Raw SQL execution (`query()`) | `db.execute(...)` | `db.run(...)` (`modifying: true`) / `db.all(...)` (reads) — SQLite clients don't expose `execute` | `db.execute(...)` |
 | Raw result interpretation | node-postgres row array | better-sqlite3 result shape | node-postgres row array |
 
 The dialect is auto-detected from the `table`'s own Drizzle class (`PgTable`/`CockroachTable`/`SQLiteTable`) when `dialect` isn't given in the config — see [Constructor config](#constructor-config). An explicit `dialect` always overrides detection.
@@ -539,6 +540,6 @@ Unlike a plain duration, it also accepts a `boolean`: `false` disables slow-oper
 
 ## Requirements
 
-- `vsrepo` ^2.7.0
+- `vsrepo` ^2.7.2
 - `drizzle-orm` ^1.0.0-rc.4
 - Node.js >= 20
